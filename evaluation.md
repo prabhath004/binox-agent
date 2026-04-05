@@ -72,7 +72,19 @@ The reference stack suggests n8n or Dify for query routing and memory management
 
 **If we needed n8n:** It would sit outside the pipeline as a thin integration layer — receiving Slack messages, calling `/research`, and routing results to email/sheets. The research logic would remain unchanged in LangGraph. This separation is intentional: orchestration logic belongs in code, integration logic belongs in a workflow tool.
 
-## 6. Design Decisions Summary
+## 6. Chunking Strategy
+
+We use heading-based splitting with merging and title-prefixing, not recursive text splitting or fixed-size windows.
+
+**Why heading-based?** The corpus is structured markdown with clear `##` sections (Overview, Pricing, Risks, Differentiation). These headings are natural semantic boundaries — splitting at them preserves complete thoughts. Recursive text splitters cut blindly at character limits, breaking mid-paragraph.
+
+**Title prefixing.** Every chunk is prefixed with the company name: `[Cursor]\n## Pricing\n- Pro: $20/month...`. This ensures the embedding vector associates the pricing data with the correct company. Without it, a generic "## Pricing" chunk embeds identically regardless of which company it belongs to, causing the compressor to crosswire attributes between companies.
+
+**Small section merging.** A `## Pricing` section with 3 bullet points (133 chars) is too small to embed well and wastes a retrieval slot. We merge consecutive sections until each chunk exceeds 200 characters. This cut chunks from 77 (21 useless) to 30 (0 useless), raising average chunk size from 279 to 715 characters.
+
+**Result:** Retrieval quality improved dramatically — for "cheapest AI tools", the comparison doc now ranks #1 (distance 0.31) instead of an irrelevant Devin chunk. Company-specific queries now consistently return the correct company's data.
+
+## 7. Design Decisions Summary
 
 | Decision | Choice | Alternative | Why |
 |----------|--------|-------------|-----|

@@ -73,7 +73,7 @@ Swagger docs at `http://localhost:8000/docs`
 │   ├── budget.py         # Token/cost/chunk budget tracker
 │   ├── synthesizer.py    # Final report generation
 │   └── utils.py          # LLM wrapper
-├── data/                 # 12 markdown docs (AI dev tooling corpus)
+├── data/                 # 13 markdown docs (AI dev tooling corpus)
 ├── ingest.py             # Corpus → ChromaDB loader
 ├── evaluation.md         # Architecture trade-offs
 ├── requirements.txt
