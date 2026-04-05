@@ -4,31 +4,22 @@ from app.budget import BudgetTracker
 from app.memory import MemoryStore
 from app.utils import call_llm, parse_json_safe, logger
 
-SYNTH_SYSTEM = """You are a research analyst writing a structured report. Return JSON:
+SYNTH_SYSTEM = """You are a research analyst. Given an objective and evidence, return JSON with this EXACT structure:
 {
-  "answer": "EXACTLY 3 paragraphs separated by \\n\\n — see structure below",
-  "sections": [{"sub_question": "...", "finding": "1-2 sentences with company names + numbers", "confidence": "high|medium|low|none"}],
+  "answer_part1": "First part of the question answered. List companies, prices, facts with [source.md] citations.",
+  "answer_part2": "Second part answered. Strengths, weaknesses, risks per company with citations.",
+  "answer_part3": "Verdict. Clear recommendation: best for budget, best for use case, best overall. With citations.",
+  "sections": [{"sub_question": "...", "finding": "specific finding with names+numbers", "confidence": "high|medium|low|none"}],
   "key_insights": ["insight1", "insight2", "insight3"],
-  "limitations": ["limitation1", "limitation2"],
+  "limitations": ["what evidence was missing"],
   "sources_used": ["file1.md", "file2.md"]
 }
 
-You MUST write EXACTLY 3 paragraphs in the answer field:
-
-PARAGRAPH 1 — Answer the first part of the question.
-List every relevant company with price and source. Be specific: "Windsurf $15/mo [09_windsurf.md], Cursor $20/mo [01_cursor.md]"
-
-PARAGRAPH 2 — Answer the second part of the question.
-For each company, state its strengths, weaknesses, or best use case from the evidence. Example: "Cursor excels at deep IDE integration but depends on VS Code updates [01_cursor.md]. Devin handles autonomous multi-step tasks but costs $500/mo and has reliability concerns [07_devin.md]."
-
-PARAGRAPH 3 — Give a verdict.
-Who should pick what? Make a clear recommendation backed by evidence. "For budget: X. For autonomy: Y. Best overall: Z because..."
-
 RULES:
-- ONLY use facts from evidence. Never invent.
-- EVERY company mentioned needs price + source citation.
-- NEVER write one paragraph. ALWAYS three.
-- Confidence "none" for sub-questions with no evidence.
+- Each answer_part MUST be 3-5 sentences. Never just one sentence.
+- EVERY company must include its price and source: "Cursor $20/mo [01_cursor.md]"
+- Use ONLY facts from evidence. Say "No evidence" if data is missing.
+- Be direct and specific. No filler phrases.
 Return ONLY valid JSON."""
 
 
@@ -55,6 +46,11 @@ def synthesize(objective: str, sub_questions: list[str], memory: MemoryStore, bu
     if result is None:
         result = {"answer": raw, "sections": [], "key_insights": [],
                   "limitations": ["JSON parsing failed"], "sources_used": []}
+    else:
+        p1 = result.pop("answer_part1", "")
+        p2 = result.pop("answer_part2", "")
+        p3 = result.pop("answer_part3", "")
+        result["answer"] = f"{p1}\n\n{p2}\n\n{p3}".strip()
 
     result["budget_report"] = budget.report()
     result["memory_state"] = memory.to_dict()
