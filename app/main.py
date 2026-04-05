@@ -50,11 +50,25 @@ class AgentState(TypedDict):
     answered_questions: List[str]
 
 
+# --- Hard budget cutoff ---
+
+class BudgetExceeded(Exception):
+    pass
+
+
+def _check_hard_limit(budget: BudgetTracker):
+    if budget.is_over_budget():
+        budget.state.events.append("HARD_CUTOFF: budget exceeded, skipping to synthesis")
+        logger.warning("HARD CUTOFF — cost $%.4f >= limit $%.2f", budget.state.estimated_cost, budget.config.max_cost_usd)
+        raise BudgetExceeded()
+
+
 # --- Pipeline nodes ---
 
 def plan_node(state: AgentState) -> dict:
     budget: BudgetTracker = state["budget_tracker"]
     research_plan = plan(state["query"], budget)
+    _check_hard_limit(budget)
     return {
         "objective": research_plan.get("objective", state["query"]),
         "sub_questions": research_plan.get("sub_questions", [state["query"]]),
@@ -64,6 +78,7 @@ def plan_node(state: AgentState) -> dict:
 
 def retrieve_node(state: AgentState) -> dict:
     budget, store = state["budget_tracker"], state["memory_store"]
+    _check_hard_limit(budget)
     answered = state.get("answered_questions", [])
     pending = [q for q in state["sub_questions"] if q not in answered]
     store = add_evidence(store, retrieve_all(pending, budget, top_k=5), budget)
@@ -71,13 +86,17 @@ def retrieve_node(state: AgentState) -> dict:
 
 
 def compress_node(state: AgentState) -> dict:
-    return {"memory_store": compress_if_needed(state["memory_store"], state["budget_tracker"])}
+    budget = state["budget_tracker"]
+    _check_hard_limit(budget)
+    return {"memory_store": compress_if_needed(state["memory_store"], budget)}
 
 
 def replan_node(state: AgentState) -> dict:
+    budget = state["budget_tracker"]
+    _check_hard_limit(budget)
     new_qs = maybe_replan(
         state["objective"], state.get("answered_questions", []),
-        state["memory_store"].all_evidence_text(), state["budget_tracker"],
+        state["memory_store"].all_evidence_text(), budget,
     )
     return {"sub_questions": state["sub_questions"] + new_qs} if new_qs else {}
 
@@ -120,16 +139,27 @@ def run_research(request: ResearchRequest) -> dict:
         max_cost_usd=request.max_cost_usd,
         max_replans=request.max_replans,
     )
+    budget = BudgetTracker(config)
+    memory = MemoryStore()
     initial: AgentState = {
         "query": request.query, "objective": "", "sub_questions": [],
         "success_criteria": "", "evidence": [], "memory": {},
-        "budget_tracker": BudgetTracker(config), "memory_store": MemoryStore(),
+        "budget_tracker": budget, "memory_store": memory,
         "result": {}, "answered_questions": [],
     }
     start = time.time()
-    final = _graph.invoke(initial)
-    result = final.get("result", {})
-    result["sub_questions"] = final.get("sub_questions", [])
+    try:
+        final = _graph.invoke(initial)
+        result = final.get("result", {})
+        result["sub_questions"] = final.get("sub_questions", [])
+    except BudgetExceeded:
+        logger.warning("Budget exceeded — forcing early synthesis with available evidence")
+        result = synthesize(
+            initial["query"], initial.get("sub_questions", [initial["query"]]),
+            memory, budget,
+        )
+        result["sub_questions"] = initial.get("sub_questions", [])
+        result.setdefault("limitations", []).append("Research cut short — budget hard limit exceeded")
     result["elapsed_seconds"] = round(time.time() - start, 2)
     return result
 
