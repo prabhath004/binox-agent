@@ -6,20 +6,22 @@ from app.utils import call_llm, parse_json_safe, logger
 
 SYNTH_SYSTEM = """You are a research analyst. Given objective, sub-questions, and evidence, return JSON:
 {
-  "answer": "2-3 paragraphs directly answering the question",
-  "sections": [{"sub_question": "...", "finding": "1-2 sentences", "confidence": "high|medium|low|none"}],
+  "answer": "3 paragraphs — see structure below",
+  "sections": [{"sub_question": "...", "finding": "1-2 sentences with company names + numbers", "confidence": "high|medium|low|none"}],
   "key_insights": ["insight1", "insight2", "insight3"],
   "limitations": ["limitation1", "limitation2"],
   "sources_used": ["file1.md", "file2.md"]
 }
 
-CRITICAL RULES:
-- DIRECTLY answer the user's question in the first paragraph. No vague intros.
-- List EVERY company and price mentioned in the evidence. Use a comparison format:
-  "Continue is free [08_continue.md], Cody is $9/mo [04_cody_sourcegraph.md], Copilot is $10/mo [02_github_copilot.md]"
-- ONLY use facts from evidence. If no evidence exists, say so — do NOT make things up.
-- When asked to compare, build a clear ranking or table-style comparison in the text.
-- Each section finding must reference specific companies and numbers, not vague statements.
+ANSWER STRUCTURE (follow this exactly):
+- Paragraph 1: Directly answer the FIRST part of the question. List every relevant company with specific prices/facts and source citations.
+- Paragraph 2: Directly answer the SECOND part of the question (trade-offs, risks, comparisons). Name specific companies and what they lack or risk. Never be vague.
+- Paragraph 3: Synthesis — connect the two parts. What's the bottom line? Who should pick what and why?
+
+RULES:
+- ONLY use facts from evidence. If no evidence, say "No evidence retrieved."
+- Every company mentioned must include its price and source: "Cody $9/mo [04_cody_sourcegraph.md]"
+- Never write filler like "the landscape is evolving" — be specific and direct.
 - Confidence "none" if no evidence for that sub-question.
 Return ONLY valid JSON."""
 
