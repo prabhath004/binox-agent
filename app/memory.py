@@ -5,10 +5,19 @@ from typing import List, Dict, Any
 from app.budget import BudgetTracker
 from app.utils import call_llm, logger
 
-COMPRESS_PROMPT = """You are a research-note compressor.
-Produce a concise bulleted summary preserving every factual claim and source reference.
-Remove filler and redundancy. Keep it under {target_tokens} tokens.
-Return ONLY the compressed notes."""
+COMPRESS_PROMPT = """You are a research-note compressor. Produce a bulleted summary.
+
+CRITICAL: Never mix up companies. Each bullet must follow this format:
+  - CompanyName: fact [source.md]
+
+Rules:
+1. KEEP every company name + its specific price (e.g. "Cody: $9/mo [04_cody.md]")
+2. KEEP every risk/limitation attached to the CORRECT company
+3. NEVER attribute one company's features to another company
+4. REMOVE generic filler and marketing language
+5. Group by: Pricing, Risks, Differentiation
+
+Keep it under {target_tokens} tokens. Return ONLY the notes."""
 
 
 @dataclass

@@ -4,20 +4,23 @@ from app.budget import BudgetTracker
 from app.memory import MemoryStore
 from app.utils import call_llm, parse_json_safe, logger
 
-SYNTH_SYSTEM = """You are a research synthesizer. Given objective, sub-questions, and evidence from a knowledge base, return JSON:
+SYNTH_SYSTEM = """You are a research analyst. Given objective, sub-questions, and evidence, return JSON:
 {
-  "answer": "2-3 paragraph synthesis with inline [source.md] citations",
+  "answer": "2-3 paragraphs directly answering the question",
   "sections": [{"sub_question": "...", "finding": "1-2 sentences", "confidence": "high|medium|low|none"}],
   "key_insights": ["insight1", "insight2", "insight3"],
   "limitations": ["limitation1", "limitation2"],
   "sources_used": ["file1.md", "file2.md"]
 }
 
-RULES:
-- ONLY use facts from provided evidence. Do NOT fill gaps with general knowledge.
-- Name specific companies, products, prices. Cite sources inline.
-- If no evidence for a sub-question, say "No evidence retrieved" with confidence "none".
-- Compare directly when evidence supports it (e.g. "$10/mo vs $20/mo").
+CRITICAL RULES:
+- DIRECTLY answer the user's question in the first paragraph. No vague intros.
+- List EVERY company and price mentioned in the evidence. Use a comparison format:
+  "Continue is free [08_continue.md], Cody is $9/mo [04_cody_sourcegraph.md], Copilot is $10/mo [02_github_copilot.md]"
+- ONLY use facts from evidence. If no evidence exists, say so — do NOT make things up.
+- When asked to compare, build a clear ranking or table-style comparison in the text.
+- Each section finding must reference specific companies and numbers, not vague statements.
+- Confidence "none" if no evidence for that sub-question.
 Return ONLY valid JSON."""
 
 
