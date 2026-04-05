@@ -4,25 +4,25 @@
 
 The pipeline decomposition (plan → retrieve → compress → synthesize) was chosen over a single-prompt approach for three reasons:
 
-**Modularity.** Each stage has a single responsibility and can be tested, tuned, and swapped independently. The planner can be improved without touching retrieval logic. The compressor can be replaced with a different strategy without affecting synthesis.
+**Modularity.** Each stage has a single responsibility and can be tested, tuned, and swapped independently.
 
-**Budget control.** A monolithic prompt that stuffs all context into one call makes it impossible to enforce per-step token limits. The pipeline model lets us measure and compress at each boundary. If evidence exceeds 2,000 tokens after retrieval, we compress before synthesis — the synthesizer never sees an oversized context.
+**Budget control.** A monolithic prompt makes it impossible to enforce per-step token limits. The pipeline lets us measure and compress at each boundary. If evidence exceeds 800 tokens after retrieval, we compress before synthesis — the synthesizer never sees an oversized context.
 
-**Observability.** Each stage produces inspectable output: the plan is a JSON object, the retriever returns scored chunks, the compressor logs what it dropped, and the synthesizer reports confidence per section. This makes debugging straightforward and demos convincing.
+**Observability.** Each stage produces inspectable output: the plan is a JSON object, the retriever returns scored chunks, the compressor logs what it dropped, and the synthesizer reports confidence per section.
 
-**Trade-off accepted:** More LLM calls (3–5 per run) means slightly higher latency and cost than a single-shot approach. We mitigate this by using `gpt-4o-mini` (cheap, fast) and keeping `max_tokens` tight at each stage.
+**Trade-off accepted:** More LLM calls (3–5 per run) means slightly higher latency than a single-shot approach. We mitigate this by using gpt-4o-mini and keeping max_tokens tight at each stage.
 
 ## 2. Why Vector Retrieval Instead of Full Context?
 
-Dumping all 12 documents (~8,000 tokens) into a single prompt would technically fit within GPT-4o-mini's 128K context window. We chose vector retrieval anyway because:
+Dumping all 12 documents (~8,000 tokens) into a single prompt would fit within GPT-4o-mini's 128K context window. We chose vector retrieval because:
 
-**The constraint is the point.** The assignment asks for memory-constrained operation. Retrieval with a top-k limit (8 chunks max) proves we can scale to a corpus 100x larger without changing architecture. Full-context dumping breaks at corpus sizes beyond the context window.
+**The constraint is the point.** Retrieval with a top-k limit (20 chunks max) proves we can scale to a corpus 100x larger without changing architecture. Full-context dumping breaks at scale.
 
-**Relevance filtering improves quality.** Not all documents are relevant to every sub-question. Vector similarity + a cosine distance threshold (0.35) means the synthesizer sees only high-signal evidence, reducing hallucination and improving answer precision.
+**Relevance filtering improves quality.** Vector similarity + a cosine distance threshold (0.75) means the synthesizer sees only high-signal evidence, reducing hallucination. Deduplication across sub-questions prevents the same chunk consuming multiple budget slots.
 
-**Cost scales linearly with retrieval, not corpus size.** With full context, cost grows as O(corpus_size × num_calls). With retrieval, embedding is a one-time cost, and each LLM call receives only the k most relevant chunks.
+**Cost scales with retrieval, not corpus size.** Embedding is a one-time cost (using Chroma's local MiniLM model — zero API cost). Each LLM call receives only the most relevant chunks.
 
-**Trade-off accepted:** Chroma's default embedding model (all-MiniLM-L6-v2) is fast but not state-of-the-art. For a production system, we'd use a stronger embedding model (e.g., text-embedding-3-large) or add a cross-encoder reranker. The current setup prioritizes simplicity and zero API cost for embedding.
+**Trade-off accepted:** Chroma's default MiniLM embedding is fast but not state-of-the-art. For production, we'd add a cross-encoder reranker or use text-embedding-3-large.
 
 ## 3. How the Token/Cost Limit Works
 
@@ -30,58 +30,57 @@ The budget system tracks four dimensions:
 
 | Metric | Limit | Enforcement Point |
 |--------|-------|-------------------|
-| Context tokens per step | 2,000 | Before each LLM call — compress if exceeded |
-| Total retrieved chunks | 8 | During retrieval — stop fetching when limit hit |
+| Context tokens per step | 800 | Before each LLM call — compress if exceeded |
+| Total retrieved chunks | 20 | During retrieval — stop fetching when limit hit |
 | Total cost (USD) | $0.05 | After each LLM call — skip remaining steps if over |
 | Replan attempts | 2 | After compression — limit recursive expansion |
 
-**How compression works:**
-1. After retrieval, `memory.compress_if_needed()` checks if the combined evidence exceeds 2,000 tokens.
-2. If yes, it calls the LLM with a compression prompt: "Summarize these evidence chunks into concise notes under {target} tokens."
-3. The compressed summary replaces the raw chunks in evidence memory.
-4. The budget tracker logs a `compression_event` so the final report shows it happened.
+**Compression flow:** After retrieval, `compress_if_needed()` checks if combined evidence exceeds 800 tokens. If yes, the LLM summarizes it to ~400 tokens. The compressed summary replaces raw chunks. The budget tracker logs a `compression_event`.
 
-**How cost is estimated:**
-We use OpenAI's actual `usage` field from each API response (`prompt_tokens` and `completion_tokens`). Cost is calculated at gpt-4o-mini rates ($0.15/M input, $0.60/M output). This is not an estimate — it's the real token count from the API.
+**Cost tracking:** We use OpenAI's actual `usage` field from each API response. Cost is calculated at gpt-4o-mini rates ($0.15/M input, $0.60/M output). This is the real token count from the API, not an estimate.
 
-**Failure modes:**
-- If cost limit is hit mid-retrieval: remaining sub-questions are skipped, and the synthesizer works with partial evidence. The report's `limitations` field notes what was missed.
-- If all chunks are used: retrieval stops, and the report notes "chunk budget exhausted."
-- If compression fails: raw chunks are truncated by character count as a fallback.
+**When limits are hit:**
+- Cost limit mid-retrieval → remaining sub-questions skipped, report notes what was missed
+- All chunks used → retrieval stops, report notes "chunk budget exhausted"
+- Low-relevance chunks → dropped before entering memory, sorted by relevance score
 
 ## 4. Trade-off: Lower Cost vs. Lower Completeness
 
-This is the central tension of a budget-constrained research agent.
-
 **What we lose with tight budgets:**
-- Fewer sub-questions explored (some aspects of the query may be under-covered)
-- Compressed evidence loses nuance (specific numbers, quotes, edge cases)
-- No reranking step (we use embedding similarity only, no cross-encoder)
-- Single-pass synthesis (no iterative refinement of the answer)
+- Fewer sub-questions explored (some aspects under-covered)
+- Compressed evidence loses nuance (specific numbers, edge cases)
+- No reranking step (embedding similarity only)
+- Single-pass synthesis (no iterative refinement)
 
 **What we gain:**
-- Predictable cost: every run stays under $0.05
-- Predictable latency: 3–5 LLM calls × ~1s each = under 10 seconds
-- Reproducible: same query + same corpus = same plan + same chunks
-- Scalable: this architecture works for 12 docs or 12,000 docs without code changes
+- Predictable cost: every run stays under $0.05 (typically under $0.002)
+- Predictable latency: 3–7 LLM calls at under 60 seconds total
+- Reproducible: same query + same corpus = consistent output
+- Scalable: architecture works for 12 docs or 12,000 docs
 
-**The right framing:** A budget-constrained agent is not "worse" — it's honest about its limitations. The final report explicitly states what was skipped, what had low confidence, and what the budget consumed. This is more useful than an unconstrained agent that silently hallucinates to fill gaps.
+**The right framing:** A budget-constrained agent is not "worse" — it's honest about its limitations. The final report explicitly states what was skipped, what had low confidence, and what the budget consumed.
 
-**Production extension path:**
-1. Increase chunk budget to 20–30 for broader coverage
-2. Add a reranker (cross-encoder) between retrieval and compression
-3. Use `gpt-4o` for synthesis (higher quality, ~10x more expensive)
-4. Add iterative refinement: synthesize → evaluate → retrieve more → re-synthesize
-5. Implement long-term memory across sessions (persist compressed notes to vector DB)
+## 5. Why LangGraph over n8n/Dify
 
-## 5. Design Decisions Summary
+The reference stack suggests n8n or Dify for query routing and memory management. We chose LangGraph + FastAPI instead because:
 
-| Decision | Choice | Alternative Considered | Why |
-|----------|--------|----------------------|-----|
-| Orchestration | LangGraph | Raw Python functions | Explicit state graph, conditional edges, built-in persistence |
-| Vector DB | ChromaDB | FAISS, Pinecone | Zero config, local, free, good enough for bounded corpus |
-| LLM | gpt-4o-mini | gpt-4o, Claude | Cheapest option that supports JSON mode and function calling |
-| Embedding | Chroma default (MiniLM) | OpenAI text-embedding-3 | Free, local, no API key needed for embedding |
-| Memory strategy | Summarization cascade | Sliding window, token pruning | Preserves factual claims while reducing size |
-| API framework | FastAPI | Flask, no API | Auto-docs, async support, Pydantic validation |
-| Corpus | 12 curated markdown files | Web crawling, PDF parsing | Reproducible, bounded, easy to explain in demo |
+**n8n is a trigger layer, not an orchestration engine.** n8n excels at "when X happens, call Y, send result to Z" — webhooks, cron jobs, Slack integration. Our pipeline needs conditional looping (replan → retrieve again if gaps exist), shared mutable state across nodes, and tight budget enforcement between steps. These are code-level concerns, not workflow routing concerns.
+
+**LangGraph handles the conditional loop cleanly.** After the replan node, the graph decides at runtime whether to loop back to retrieval or proceed to synthesis. This conditional edge based on budget state is natural in LangGraph and awkward in a visual workflow tool.
+
+**FastAPI serves the same trigger role.** The `POST /research` endpoint accepts a query and returns a structured report. Any external system (n8n, Slack bot, cron job, frontend) can call it. Adding n8n as a wrapper would add operational complexity (Docker, separate service) without improving the core pipeline.
+
+**If we needed n8n:** It would sit outside the pipeline as a thin integration layer — receiving Slack messages, calling `/research`, and routing results to email/sheets. The research logic would remain unchanged in LangGraph. This separation is intentional: orchestration logic belongs in code, integration logic belongs in a workflow tool.
+
+## 6. Design Decisions Summary
+
+| Decision | Choice | Alternative | Why |
+|----------|--------|-------------|-----|
+| Orchestration | LangGraph | n8n, Dify, raw Python | Conditional loops, shared state, extensible graph |
+| Vector DB | ChromaDB | FAISS, Pinecone | Zero config, local, free, sufficient for bounded corpus |
+| LLM | gpt-4o-mini | gpt-4o, Claude | Cheapest option with JSON mode support |
+| Embedding | Chroma default (MiniLM) | OpenAI text-embedding-3 | Free, local, no API key needed |
+| Memory | Summarization cascade | Sliding window, token pruning | Preserves factual claims while reducing size |
+| API | FastAPI | Flask, n8n webhook | Auto-docs, async, Pydantic validation |
+| Corpus | 12 curated markdown files | Web crawling, PDF parsing | Reproducible, bounded, verifiable results |
+| Trigger layer | FastAPI endpoint | n8n/Dify | Simpler ops, same functionality for demo scope |

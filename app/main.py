@@ -1,18 +1,6 @@
-"""
-Main entrypoint: FastAPI server + LangGraph pipeline.
-
-Pipeline stages:
-  1. plan      — decompose question into sub-questions
-  2. retrieve  — fetch evidence from Chroma per sub-question
-  3. compress  — shrink evidence to fit the token budget
-  4. replan    — optionally add sub-questions if gaps found
-  5. synthesize — produce the final structured report
-"""
-
+"""FastAPI server + LangGraph pipeline orchestration."""
 from __future__ import annotations
-
-import time
-import logging
+import time, json, sys, logging
 from typing import TypedDict, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException
@@ -20,26 +8,20 @@ from pydantic import BaseModel
 from langgraph.graph import StateGraph, END
 
 from app.budget import BudgetTracker, BudgetConfig
-from app.memory import MemoryStore, EvidenceChunk, add_evidence, compress_if_needed
+from app.memory import MemoryStore, add_evidence, compress_if_needed
 from app.planner import plan, maybe_replan
 from app.retriever import retrieve_all
 from app.synthesizer import synthesize
 from app.utils import logger
 
-# ────────────────────── FastAPI ──────────────────────
-
-app = FastAPI(
-    title="Deep Research Agent",
-    description="Budget-aware research agent: planner → retriever → memory compression → synthesis",
-    version="1.0.0",
-)
+app = FastAPI(title="Deep Research Agent", version="1.0.0")
 
 
 class ResearchRequest(BaseModel):
     query: str
     max_cost_usd: float = 0.05
-    max_chunks: int = 8
-    max_context_tokens: int = 2000
+    max_chunks: int = 20
+    max_context_tokens: int = 800
     max_replans: int = 2
 
 
@@ -55,8 +37,6 @@ class ResearchResponse(BaseModel):
     elapsed_seconds: float
 
 
-# ────────────────────── LangGraph state ──────────────────────
-
 class AgentState(TypedDict):
     query: str
     objective: str
@@ -64,19 +44,17 @@ class AgentState(TypedDict):
     success_criteria: str
     evidence: List[Dict[str, Any]]
     memory: Dict[str, Any]
-    budget_tracker: Any  # BudgetTracker (not serialisable, passed by ref)
-    memory_store: Any    # MemoryStore
+    budget_tracker: Any
+    memory_store: Any
     result: Dict[str, Any]
     answered_questions: List[str]
 
 
-# ────────────────────── Pipeline nodes ──────────────────────
+# --- Pipeline nodes ---
 
 def plan_node(state: AgentState) -> dict:
-    """Decompose user query into sub-questions."""
     budget: BudgetTracker = state["budget_tracker"]
     research_plan = plan(state["query"], budget)
-
     return {
         "objective": research_plan.get("objective", state["query"]),
         "sub_questions": research_plan.get("sub_questions", [state["query"]]),
@@ -85,215 +63,125 @@ def plan_node(state: AgentState) -> dict:
 
 
 def retrieve_node(state: AgentState) -> dict:
-    """Retrieve evidence for all pending sub-questions."""
-    budget: BudgetTracker = state["budget_tracker"]
-    store: MemoryStore = state["memory_store"]
+    budget, store = state["budget_tracker"], state["memory_store"]
     answered = state.get("answered_questions", [])
     pending = [q for q in state["sub_questions"] if q not in answered]
-
-    chunks = retrieve_all(pending, budget, top_k=3)
-    store = add_evidence(store, chunks, budget)
-
-    return {
-        "memory_store": store,
-        "answered_questions": answered + pending,
-    }
+    store = add_evidence(store, retrieve_all(pending, budget, top_k=5), budget)
+    return {"memory_store": store, "answered_questions": answered + pending}
 
 
 def compress_node(state: AgentState) -> dict:
-    """Compress evidence if it exceeds the per-step token budget."""
-    budget: BudgetTracker = state["budget_tracker"]
-    store: MemoryStore = state["memory_store"]
-    store = compress_if_needed(store, budget)
-    return {"memory_store": store}
+    return {"memory_store": compress_if_needed(state["memory_store"], state["budget_tracker"])}
 
 
 def replan_node(state: AgentState) -> dict:
-    """Optionally add sub-questions if gaps exist."""
-    budget: BudgetTracker = state["budget_tracker"]
-    store: MemoryStore = state["memory_store"]
-
     new_qs = maybe_replan(
-        state["objective"],
-        state.get("answered_questions", []),
-        store.all_evidence_text(),
-        budget,
+        state["objective"], state.get("answered_questions", []),
+        state["memory_store"].all_evidence_text(), state["budget_tracker"],
     )
-
-    if new_qs:
-        return {"sub_questions": state["sub_questions"] + new_qs}
-
-    return {}
+    return {"sub_questions": state["sub_questions"] + new_qs} if new_qs else {}
 
 
 def should_retrieve_again(state: AgentState) -> str:
-    """After replan, check if new sub-questions were added."""
-    budget: BudgetTracker = state["budget_tracker"]
+    budget = state["budget_tracker"]
     answered = set(state.get("answered_questions", []))
     pending = [q for q in state["sub_questions"] if q not in answered]
-
     if pending and not budget.is_over_budget() and budget.remaining_chunks() > 0:
         return "retrieve"
     return "synthesize"
 
 
 def synthesize_node(state: AgentState) -> dict:
-    """Produce the final research report."""
-    budget: BudgetTracker = state["budget_tracker"]
-    store: MemoryStore = state["memory_store"]
-
-    result = synthesize(
-        state["objective"],
-        state["sub_questions"],
-        store,
-        budget,
-    )
-    return {"result": result}
+    return {"result": synthesize(state["objective"], state["sub_questions"], state["memory_store"], state["budget_tracker"])}
 
 
-# ────────────────────── Build graph ──────────────────────
+# --- Graph ---
 
 def build_graph() -> StateGraph:
-    graph = StateGraph(AgentState)
-
-    graph.add_node("plan", plan_node)
-    graph.add_node("retrieve", retrieve_node)
-    graph.add_node("compress", compress_node)
-    graph.add_node("replan", replan_node)
-    graph.add_node("synthesize", synthesize_node)
-
-    graph.set_entry_point("plan")
-    graph.add_edge("plan", "retrieve")
-    graph.add_edge("retrieve", "compress")
-    graph.add_edge("compress", "replan")
-    graph.add_conditional_edges(
-        "replan",
-        should_retrieve_again,
-        {"retrieve": "retrieve", "synthesize": "synthesize"},
-    )
-    graph.add_edge("synthesize", END)
-
-    return graph
+    g = StateGraph(AgentState)
+    for name, fn in [("plan", plan_node), ("retrieve", retrieve_node), ("compress", compress_node), ("replan", replan_node), ("synthesize", synthesize_node)]:
+        g.add_node(name, fn)
+    g.set_entry_point("plan")
+    g.add_edge("plan", "retrieve")
+    g.add_edge("retrieve", "compress")
+    g.add_edge("compress", "replan")
+    g.add_conditional_edges("replan", should_retrieve_again, {"retrieve": "retrieve", "synthesize": "synthesize"})
+    g.add_edge("synthesize", END)
+    return g
 
 
-_compiled_graph = build_graph().compile()
+_graph = build_graph().compile()
 
-
-# ────────────────────── Run pipeline ──────────────────────
 
 def run_research(request: ResearchRequest) -> dict:
-    """Execute the full research pipeline."""
     config = BudgetConfig(
         max_context_tokens_per_step=request.max_context_tokens,
         max_retrieved_chunks=request.max_chunks,
         max_cost_usd=request.max_cost_usd,
         max_replans=request.max_replans,
     )
-    budget = BudgetTracker(config)
-    memory = MemoryStore()
-
-    initial_state: AgentState = {
-        "query": request.query,
-        "objective": "",
-        "sub_questions": [],
-        "success_criteria": "",
-        "evidence": [],
-        "memory": {},
-        "budget_tracker": budget,
-        "memory_store": memory,
-        "result": {},
-        "answered_questions": [],
+    initial: AgentState = {
+        "query": request.query, "objective": "", "sub_questions": [],
+        "success_criteria": "", "evidence": [], "memory": {},
+        "budget_tracker": BudgetTracker(config), "memory_store": MemoryStore(),
+        "result": {}, "answered_questions": [],
     }
-
     start = time.time()
-    final_state = _compiled_graph.invoke(initial_state)
-    elapsed = time.time() - start
-
-    result = final_state.get("result", {})
-    result["sub_questions"] = final_state.get("sub_questions", [])
-    result["elapsed_seconds"] = round(elapsed, 2)
-
+    final = _graph.invoke(initial)
+    result = final.get("result", {})
+    result["sub_questions"] = final.get("sub_questions", [])
+    result["elapsed_seconds"] = round(time.time() - start, 2)
     return result
 
 
-# ────────────────────── API endpoints ──────────────────────
+# --- API ---
 
 @app.post("/research", response_model=ResearchResponse)
 async def research_endpoint(request: ResearchRequest):
-    """Run a deep research query under budget constraints."""
     try:
-        result = run_research(request)
+        r = run_research(request)
         return ResearchResponse(
-            answer=result.get("answer", ""),
-            sub_questions=result.get("sub_questions", []),
-            sections=result.get("sections", []),
-            key_insights=result.get("key_insights", []),
-            limitations=result.get("limitations", []),
-            sources_used=result.get("sources_used", []),
-            budget_report=result.get("budget_report", {}),
-            memory_state=result.get("memory_state", {}),
-            elapsed_seconds=result.get("elapsed_seconds", 0),
+            answer=r.get("answer", ""), sub_questions=r.get("sub_questions", []),
+            sections=r.get("sections", []), key_insights=r.get("key_insights", []),
+            limitations=r.get("limitations", []), sources_used=r.get("sources_used", []),
+            budget_report=r.get("budget_report", {}), memory_state=r.get("memory_state", {}),
+            elapsed_seconds=r.get("elapsed_seconds", 0),
         )
     except Exception as e:
-        logger.exception("Research pipeline failed")
+        logger.exception("Pipeline failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "deep-research-agent"}
+    return {"status": "ok"}
 
 
-# ────────────────────── CLI runner ──────────────────────
+# --- CLI ---
 
 def cli_demo():
-    """Run a demo question from the command line."""
-    import json
-    import sys
+    query = sys.argv[1] if len(sys.argv) > 1 else "Analyze top AI developer tooling startups, compare pricing, risks, and differentiation."
 
-    query = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else "Analyze top AI developer tooling startups, compare pricing, risks, and differentiation."
-    )
+    print(f"\n{'='*70}\nDEEP RESEARCH AGENT\n{'='*70}\nQuery: {query}\n")
+    result = run_research(ResearchRequest(query=query))
 
-    print(f"\n{'='*70}")
-    print(f"DEEP RESEARCH AGENT — Budget-Constrained Pipeline")
-    print(f"{'='*70}")
-    print(f"Query: {query}\n")
-
-    req = ResearchRequest(query=query)
-    result = run_research(req)
-
-    print(f"\n{'─'*70}")
-    print("SUB-QUESTIONS:")
+    print(f"{'─'*70}\nSUB-QUESTIONS:")
     for i, q in enumerate(result.get("sub_questions", []), 1):
         print(f"  {i}. {q}")
 
-    print(f"\n{'─'*70}")
-    print("ANSWER:")
-    print(result.get("answer", "No answer generated"))
+    print(f"\n{'─'*70}\nANSWER:\n{result.get('answer', 'No answer generated')}")
 
-    print(f"\n{'─'*70}")
-    print("KEY INSIGHTS:")
-    for insight in result.get("key_insights", []):
-        print(f"  • {insight}")
+    print(f"\n{'─'*70}\nKEY INSIGHTS:")
+    for x in result.get("key_insights", []):
+        print(f"  • {x}")
 
-    print(f"\n{'─'*70}")
-    print("LIMITATIONS:")
-    for lim in result.get("limitations", []):
-        print(f"  • {lim}")
+    print(f"\n{'─'*70}\nLIMITATIONS:")
+    for x in result.get("limitations", []):
+        print(f"  • {x}")
 
-    print(f"\n{'─'*70}")
-    print("BUDGET REPORT:")
-    print(json.dumps(result.get("budget_report", {}), indent=2))
-
-    print(f"\n{'─'*70}")
-    print("MEMORY STATE:")
-    print(json.dumps(result.get("memory_state", {}), indent=2))
-
-    print(f"\nCompleted in {result.get('elapsed_seconds', 0)}s")
-    print(f"{'='*70}\n")
+    print(f"\n{'─'*70}\nBUDGET REPORT:\n{json.dumps(result.get('budget_report', {}), indent=2)}")
+    print(f"\n{'─'*70}\nMEMORY STATE:\n{json.dumps(result.get('memory_state', {}), indent=2)}")
+    print(f"\nCompleted in {result.get('elapsed_seconds', 0)}s\n{'='*70}\n")
 
 
 if __name__ == "__main__":
