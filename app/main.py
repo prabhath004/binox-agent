@@ -28,6 +28,7 @@ class ResearchRequest(BaseModel):
 class ResearchResponse(BaseModel):
     answer: str
     sub_questions: List[str]
+    initial_sub_question_count: int | None = None
     sections: List[Dict[str, Any]]
     key_insights: List[str]
     limitations: List[str]
@@ -41,6 +42,7 @@ class AgentState(TypedDict):
     query: str
     objective: str
     sub_questions: List[str]
+    initial_sub_question_count: int
     success_criteria: str
     evidence: List[Dict[str, Any]]
     memory: Dict[str, Any]
@@ -69,9 +71,11 @@ def plan_node(state: AgentState) -> dict:
     budget: BudgetTracker = state["budget_tracker"]
     research_plan = plan(state["query"], budget)
     _check_hard_limit(budget)
+    qs = research_plan.get("sub_questions", [state["query"]])
     return {
         "objective": research_plan.get("objective", state["query"]),
-        "sub_questions": research_plan.get("sub_questions", [state["query"]]),
+        "sub_questions": qs,
+        "initial_sub_question_count": len(qs),
         "success_criteria": research_plan.get("success_criteria", ""),
     }
 
@@ -143,6 +147,7 @@ def run_research(request: ResearchRequest) -> dict:
     memory = MemoryStore()
     initial: AgentState = {
         "query": request.query, "objective": "", "sub_questions": [],
+        "initial_sub_question_count": 0,
         "success_criteria": "", "evidence": [], "memory": {},
         "budget_tracker": budget, "memory_store": memory,
         "result": {}, "answered_questions": [],
@@ -152,6 +157,7 @@ def run_research(request: ResearchRequest) -> dict:
         final = _graph.invoke(initial)
         result = final.get("result", {})
         result["sub_questions"] = final.get("sub_questions", [])
+        result["initial_sub_question_count"] = final.get("initial_sub_question_count", 0)
     except BudgetExceeded:
         logger.warning("Budget exceeded — forcing early synthesis with available evidence")
         result = synthesize(
@@ -159,6 +165,8 @@ def run_research(request: ResearchRequest) -> dict:
             memory, budget,
         )
         result["sub_questions"] = initial.get("sub_questions", [])
+        sq = initial.get("sub_questions", [])
+        result["initial_sub_question_count"] = len(sq) if sq else None
         result.setdefault("limitations", []).append("Research cut short — budget hard limit exceeded")
     result["elapsed_seconds"] = round(time.time() - start, 2)
     return result
@@ -172,6 +180,7 @@ async def research_endpoint(request: ResearchRequest):
         r = run_research(request)
         return ResearchResponse(
             answer=r.get("answer", ""), sub_questions=r.get("sub_questions", []),
+            initial_sub_question_count=r.get("initial_sub_question_count"),
             sections=r.get("sections", []), key_insights=r.get("key_insights", []),
             limitations=r.get("limitations", []), sources_used=r.get("sources_used", []),
             budget_report=r.get("budget_report", {}), memory_state=r.get("memory_state", {}),
