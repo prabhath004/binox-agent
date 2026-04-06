@@ -201,9 +201,67 @@ Response:
 {"answer": "...", "sub_questions": [...], "sections": [...], "key_insights": [...], "limitations": [...], "sources_used": [...], "budget_report": {...}, "memory_state": {...}, "elapsed_seconds": 35.2}
 ```
 
+**`POST /route`** — Smart query router (classifies query, routes to RAG pipeline or direct GPT)
+
+```bash
+# AI dev tools query → routes to research pipeline
+curl -X POST http://localhost:8000/route \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Compare Cursor vs Copilot pricing"}'
+# Response includes: "routed_to": "research_pipeline"
+
+# General query → routes to direct GPT
+curl -X POST http://localhost:8000/route \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the capital of France?"}'
+# Response includes: "routed_to": "direct_gpt"
+```
+
 **`GET /health`** — Health check
 
 **`GET /docs`** — Interactive Swagger documentation
+
+## n8n Integration (Query Routing + Memory Management)
+
+n8n serves as the external workflow layer for query routing and trigger management, as specified in the reference stack.
+
+### What n8n does
+
+1. **Query routing** — Classifies incoming queries via OpenAI. Routes AI dev tools questions to the `/research` RAG pipeline. Routes general questions to direct GPT. Prevents wasting budget on queries the corpus can't answer.
+2. **Trigger layer** — The webhook endpoint can be called from Slack, cron jobs, or any external system.
+3. **Input validation** — Rejects malformed requests before they hit the pipeline.
+
+### Setup
+
+```bash
+# Terminal 1: Start FastAPI
+uvicorn app.main:app --port 8000
+
+# Terminal 2: Start n8n (requires Docker)
+docker-compose up
+
+# Open n8n at http://localhost:5678
+# Import n8n/workflow.json via Settings → Import Workflow
+# Activate the workflow
+```
+
+### Test via n8n
+
+```bash
+# AI dev tools query → routed to research pipeline
+curl -X POST http://localhost:5678/webhook/research \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Compare Cursor vs Copilot pricing"}'
+
+# General query → routed to direct GPT
+curl -X POST http://localhost:5678/webhook/research \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the capital of France?"}'
+```
+
+### Without Docker
+
+The same routing logic is available directly via the FastAPI `/route` endpoint — no n8n or Docker required. The n8n workflow and the `/route` endpoint implement identical logic.
 
 ## Project Structure
 
@@ -215,10 +273,14 @@ Response:
 │   ├── memory.py         # Three-tier memory + LLM compression
 │   ├── budget.py         # Token/cost/chunk tracker + hard cutoff
 │   ├── synthesizer.py    # Evidence-grounded report generation
+│   ├── router.py         # Query classification + routing (RAG vs direct GPT)
 │   └── utils.py          # OpenAI wrapper + JSON parsing
+├── n8n/
+│   └── workflow.json     # Importable n8n workflow (query router)
 ├── data/                 # 13 markdown docs (AI dev tooling corpus)
+├── docker-compose.yml    # n8n container setup
 ├── ingest.py             # Heading-based chunking + ChromaDB ingestion
-├── evaluation.md         # Architecture trade-offs (7 sections)
+├── evaluation.md         # Architecture trade-offs
 ├── requirements.txt      # Pinned dependencies
 └── .env.example          # API key placeholder
 ```
@@ -228,7 +290,9 @@ Response:
 | Component | Choice | Why |
 |---|---|---|
 | Orchestration | LangGraph | Conditional loop (replan → retrieve), shared state graph |
+| Query Routing | n8n + FastAPI /route | Classifies queries, routes to RAG or direct GPT |
 | Vector DB | ChromaDB | Free, local, zero-config, built-in MiniLM embeddings |
 | LLM | gpt-4o-mini | Cheapest OpenAI model with JSON mode — ~$0.002/run |
 | Embeddings | Chroma default (MiniLM-L6-v2) | Free, local, no API key needed |
 | API | FastAPI | Auto-generated docs, async, Pydantic validation |
+| Workflow | n8n | Webhook triggers, query classification, external integrations |

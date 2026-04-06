@@ -182,6 +182,40 @@ async def research_endpoint(request: ResearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/route")
+async def route_endpoint(request: ResearchRequest):
+    """Query router: classifies query and routes to RAG pipeline or direct GPT."""
+    from app.router import classify_query, direct_gpt_answer
+    import time
+
+    start = time.time()
+    route = classify_query(request.query)
+    logger.info("Query routed to: %s", route)
+
+    if route == "research":
+        try:
+            r = run_research(request)
+            r["routed_to"] = "research_pipeline"
+            return r
+        except Exception as e:
+            logger.exception("Pipeline failed")
+            raise HTTPException(status_code=500, detail=str(e))
+    else:
+        answer = direct_gpt_answer(request.query)
+        return {
+            "answer": answer,
+            "routed_to": "direct_gpt",
+            "sub_questions": [],
+            "sections": [],
+            "key_insights": [],
+            "limitations": ["Answered from general knowledge — not from research corpus"],
+            "sources_used": [],
+            "budget_report": {"note": "No research pipeline used — direct GPT response"},
+            "memory_state": {},
+            "elapsed_seconds": round(time.time() - start, 2),
+        }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}

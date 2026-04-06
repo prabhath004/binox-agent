@@ -1,0 +1,215 @@
+{
+  "name": "Deep Research Agent — Query Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "research",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "conditions": [
+            {
+              "id": "cache-check",
+              "leftValue": "={{ $json.body.query }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "exists" }
+            }
+          ]
+        }
+      },
+      "id": "validate-1",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a query classifier. Given a user query, respond with ONLY one word:\n- \"research\" if the query is about AI developer tools, coding assistants, IDEs, AI editors, or software development tooling\n- \"general\" if the query is about anything else\n\nRespond with ONLY the single word: research or general"
+            },
+            {
+              "role": "user",
+              "content": "={{ $json.body.query }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0,
+          "maxTokens": 5
+        }
+      },
+      "id": "router-1",
+      "name": "Query Router",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.2,
+      "position": [620, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-cred",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "conditions": [
+            {
+              "id": "route-check",
+              "leftValue": "={{ $json.message.content.trim().toLowerCase() }}",
+              "rightValue": "research",
+              "operator": { "type": "string", "operation": "contains" }
+            }
+          ]
+        }
+      },
+      "id": "switch-1",
+      "name": "Route Decision",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [820, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/research",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: $('Webhook').item.json.body.query }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "research-1",
+      "name": "Research Pipeline (RAG)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1020, 200]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a helpful assistant. Answer the user's question directly and concisely. This question is outside the scope of our AI developer tooling knowledge base, so answer from your general knowledge."
+            },
+            {
+              "role": "user",
+              "content": "={{ $('Webhook').item.json.body.query }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 1024
+        }
+      },
+      "id": "general-1",
+      "name": "Direct GPT (General)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.2,
+      "position": [1020, 420],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-cred",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const query = $('Webhook').item.json.body.query;\nconst routedTo = $('Route Decision').item.json?.message?.content?.trim().toLowerCase().includes('research') ? 'research_pipeline' : 'direct_gpt';\n\nlet result;\nif (routedTo === 'research_pipeline') {\n  result = $('Research Pipeline (RAG)').item.json;\n} else {\n  const gptResponse = $('Direct GPT (General)').item.json;\n  result = {\n    answer: gptResponse.message?.content || gptResponse.choices?.[0]?.message?.content || 'No answer',\n    route: 'direct_gpt',\n    sub_questions: [],\n    sections: [],\n    key_insights: [],\n    limitations: ['Answered from general knowledge — not from research corpus'],\n    sources_used: [],\n    budget_report: { note: 'No research pipeline used — direct GPT response' },\n    memory_state: {},\n    elapsed_seconds: 0\n  };\n}\n\nresult.query = query;\nresult.routed_to = routedTo;\n\nreturn { json: result };"
+      },
+      "id": "format-1",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1220, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}"
+      },
+      "id": "respond-1",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1420, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'Missing query field in request body' }) }}"
+      },
+      "id": "error-1",
+      "name": "Missing Query Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [620, 500]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Validate Input", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [{ "node": "Query Router", "type": "main", "index": 0 }],
+        [{ "node": "Missing Query Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Query Router": {
+      "main": [
+        [{ "node": "Route Decision", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route Decision": {
+      "main": [
+        [{ "node": "Research Pipeline (RAG)", "type": "main", "index": 0 }],
+        [{ "node": "Direct GPT (General)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Research Pipeline (RAG)": {
+      "main": [
+        [{ "node": "Format Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Direct GPT (General)": {
+      "main": [
+        [{ "node": "Format Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [{ "node": "Respond", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "deep-research-agent" }
+  ]
+}

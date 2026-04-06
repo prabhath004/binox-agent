@@ -60,17 +60,17 @@ The budget system tracks four dimensions:
 
 **The right framing:** A budget-constrained agent is not "worse" — it's honest about its limitations. The final report explicitly states what was skipped, what had low confidence, and what the budget consumed.
 
-## 5. Why LangGraph over n8n/Dify
+## 5. How n8n and LangGraph Split Responsibilities
 
-The reference stack suggests n8n or Dify for query routing and memory management. We chose LangGraph + FastAPI instead because:
+The reference stack suggests "n8n/Dify for query routing + memory management." We use both n8n and LangGraph, but for different jobs:
 
-**n8n is a trigger layer, not an orchestration engine.** n8n excels at "when X happens, call Y, send result to Z" — webhooks, cron jobs, Slack integration. Our pipeline needs conditional looping (replan → retrieve again if gaps exist), shared mutable state across nodes, and tight budget enforcement between steps. These are code-level concerns, not workflow routing concerns.
+**n8n handles external concerns:** query classification, routing, webhook triggers, and integration with external systems (Slack, cron, email). It decides whether a query should go to the RAG pipeline or get a direct GPT answer. This prevents wasting budget on queries outside our corpus (e.g., "What is the capital of France?" goes straight to GPT, never touches ChromaDB).
 
-**LangGraph handles the conditional loop cleanly.** After the replan node, the graph decides at runtime whether to loop back to retrieval or proceed to synthesis. This conditional edge based on budget state is natural in LangGraph and awkward in a visual workflow tool.
+**LangGraph handles internal orchestration:** the 5-node research pipeline with conditional looping, shared state, and budget enforcement. These require code-level control (checking token counts, deciding whether to replan, compressing evidence) that a visual workflow tool can't express cleanly.
 
-**FastAPI serves the same trigger role.** The `POST /research` endpoint accepts a query and returns a structured report. Any external system (n8n, Slack bot, cron job, frontend) can call it. Adding n8n as a wrapper would add operational complexity (Docker, separate service) without improving the core pipeline.
+**The split is deliberate.** n8n is the receptionist (who comes in, what do they need, where do they go). LangGraph is the researcher (decompose, retrieve, compress, synthesize). Each tool does what it's best at.
 
-**If we needed n8n:** It would sit outside the pipeline as a thin integration layer — receiving Slack messages, calling `/research`, and routing results to email/sheets. The research logic would remain unchanged in LangGraph. This separation is intentional: orchestration logic belongs in code, integration logic belongs in a workflow tool.
+**Fallback without Docker:** The same routing logic is also available via FastAPI's `/route` endpoint, which implements identical classification in Python. This ensures the evaluator can test query routing even without running n8n/Docker.
 
 ## 6. Chunking Strategy
 
@@ -95,4 +95,4 @@ We use heading-based splitting with merging and title-prefixing, not recursive t
 | Memory | Summarization cascade | Sliding window, token pruning | Preserves factual claims while reducing size |
 | API | FastAPI | Flask, n8n webhook | Auto-docs, async, Pydantic validation |
 | Corpus | 12 curated markdown files | Web crawling, PDF parsing | Reproducible, bounded, verifiable results |
-| Trigger layer | FastAPI endpoint | n8n/Dify | Simpler ops, same functionality for demo scope |
+| Query routing | n8n + FastAPI /route | Hardcoded rules, no routing | Classifies queries, avoids wasting budget on off-topic questions |

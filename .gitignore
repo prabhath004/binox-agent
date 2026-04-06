@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 .pytest_cache/
 chroma_store/
+n8n_data/
 .env
 .DS_Store
 *.egg-info/
