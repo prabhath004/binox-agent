@@ -63,29 +63,28 @@
     },
     {
       "parameters": {
-        "mode": "manual",
-        "duplicateItem": false,
-        "assignments": {
-          "assignments": [
-            {
-              "id": "pinned-q",
-              "name": "pinned_query",
-              "value": "={{ $('Pin Query').item.json.pinned_query }}",
-              "type": "string"
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "numberInputs": 2,
+        "options": {
+          "clashHandling": {
+            "values": {
+              "resolveClash": "preferLast",
+              "mergeMode": "shallowMerge",
+              "overrideEmpty": false
             }
-          ]
-        },
-        "options": {}
+          }
+        }
       },
-      "id": "attach-pin-1",
-      "name": "Attach Pinned Query",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [674, 300]
+      "id": "merge-pin-router-1",
+      "name": "Merge Pin And Router",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [700, 300]
     },
     {
       "parameters": {
-        "jsCode": "const item = items[0].json;\nconst q = String(item.pinned_query || '').toLowerCase();\nconst raw = String(item.choices?.[0]?.message?.content || '').trim().toLowerCase();\nconst firstToken = raw.split(/[^a-z]+/).find(t => t.length > 0) || '';\nconst llmResearch = firstToken === 'research';\nconst offTopic = /\\b(bahubali|baahubali|bollywood|tollywood|hollywood|oscars?|grammy|\\bipl\\b|cricket\\s+match|nba\\s+finals?)\\b/i.test(q);\nconst antiCursor = /\\b(sql|database|mysql|postgres|sqlite|mouse|pointer|blink|oci|cursor\\s+key)\\b/i.test(q);\nconst cursorIDE = /\\bcursor\\b/.test(q) && !antiCursor;\nconst toolingRest = /\\b(copilot|github\\s*copilot|\\bgithub\\b|gitlab|windsurf|tabnine|cody|codeium|sourcegraph|continue\\s*\\.dev|devin|aider|cline|vscode|vs\\s*code|jetbrains|intellij|neovim|\\bide\\b|ai\\s*coding|coding\\s*assistant|code\\s*completion|pair\\s*programm|developer\\s*tools?|dev\\s*tools?|llm\\s+for\\s+code|replit|bolt\\.new|\\bv0\\b|vercel\\s+v0|stackblitz)\\b/i.test(q);\nconst tooling = toolingRest || cursorIDE;\nlet route_label = 'general';\nif (offTopic) route_label = 'general';\nelse if (tooling) route_label = 'research';\nelse if (llmResearch) route_label = 'research';\nreturn [{ json: { ...item, route_label } }];"
+        "jsCode": "const item = items[0].json;\n// Merge \"add suffix\" uses _1/_2 by input order; Pin may be input 1 or 2 depending on wiring.\nconst pq = item.pinned_query ?? item.pinned_query_1 ?? item.pinned_query_2;\nconst q = String(pq || '').toLowerCase();\nconst choices = item.choices ?? item.choices_1 ?? item.choices_2;\nconst raw = String(choices?.[0]?.message?.content || '').trim().toLowerCase();\nconst firstToken = raw.split(/[^a-z]+/).find(t => t.length > 0) || '';\nconst llmResearch = firstToken === 'research';\nconst offTopic = /\\b(bahubali|baahubali|bollywood|tollywood|hollywood|oscars?|grammy|\\bipl\\b|cricket\\s+match|nba\\s+finals?)\\b/i.test(q);\nconst antiCursor = /\\b(sql|database|mysql|postgres|sqlite|mouse|pointer|blink|oci|cursor\\s+key)\\b/i.test(q);\nconst cursorIDE = /\\bcursor\\b/.test(q) && !antiCursor;\nconst toolingRest = /\\b(copilot|github\\s*copilot|\\bgithub\\b|gitlab|windsurf|tabnine|cody|codeium|sourcegraph|continue\\s*\\.dev|devin|aider|cline|vscode|vs\\s*code|jetbrains|intellij|neovim|\\bide\\b|ai\\s*coding|coding\\s*assistant|code\\s*completion|pair\\s*programm|developer\\s*tools?|dev\\s*tools?|llm\\s+for\\s+code|replit|bolt\\.new|\\bv0\\b|vercel\\s+v0|stackblitz)\\b/i.test(q);\nconst tooling = toolingRest || cursorIDE;\nlet route_label = 'general';\nif (offTopic) route_label = 'general';\nelse if (tooling) route_label = 'research';\nelse if (llmResearch) route_label = 'research';\nreturn [{ json: { ...item, route_label, pinned_query: pq } }];"
       },
       "id": "route-gate-1",
       "name": "Apply Route Gate",
@@ -101,7 +100,7 @@
             {
               "id": "route-check",
               "leftValue": "={{ $json.route_label }}",
-              "rightValue": "general",
+              "rightValue": "research",
               "operator": { "type": "string", "operation": "equals" }
             }
           ]
@@ -194,15 +193,18 @@
     },
     "Pin Query": {
       "main": [
-        [{ "node": "Query Router", "type": "main", "index": 0 }]
+        [
+          { "node": "Query Router", "type": "main", "index": 0 },
+          { "node": "Merge Pin And Router", "type": "main", "index": 0 }
+        ]
       ]
     },
     "Query Router": {
       "main": [
-        [{ "node": "Attach Pinned Query", "type": "main", "index": 0 }]
+        [{ "node": "Merge Pin And Router", "type": "main", "index": 1 }]
       ]
     },
-    "Attach Pinned Query": {
+    "Merge Pin And Router": {
       "main": [
         [{ "node": "Apply Route Gate", "type": "main", "index": 0 }]
       ]
@@ -214,8 +216,8 @@
     },
     "Route Decision": {
       "main": [
-        [{ "node": "Direct GPT (General)", "type": "main", "index": 0 }],
-        [{ "node": "Research Pipeline (RAG)", "type": "main", "index": 0 }]
+        [{ "node": "Research Pipeline (RAG)", "type": "main", "index": 0 }],
+        [{ "node": "Direct GPT (General)", "type": "main", "index": 0 }]
       ]
     },
     "Research Pipeline (RAG)": {
