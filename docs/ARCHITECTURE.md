@@ -180,13 +180,4 @@ If retrieval returns nothing relevant:
 
 The app keeps synchronous OpenAI calls out of the main FastAPI event loop by using `run_in_threadpool()` at the API boundary.
 
-## 8. Why This Architecture Fits the Assessment
-
-The assessment asks for:
-
-- complex query handling
-- memory strategy under constraints
-- workflow/orchestration tooling
-- documented trade-offs
-
-This architecture satisfies those goals while keeping the core behavior testable and bounded. It is intentionally stronger on clarity and reliability than on maximal agent autonomy.
+ile keeping the core behavior testable and bounded. It is intentionally stronger on clarity and reliability than on maximal agent autonomy.
