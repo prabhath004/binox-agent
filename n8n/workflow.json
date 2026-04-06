@@ -52,7 +52,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a strict query router for an AI developer-tools RAG system.\\nReturn EXACTLY one lowercase word: research or general. No punctuation.\\n\\nRoute = research ONLY if the query is specifically about AI coding/developer tools (e.g., Cursor the IDE, Copilot, Windsurf, Tabnine, Cody, Continue, Devin), their features, pricing, comparisons, benchmarks, enterprise adoption, or developer-tooling market analysis.\\n\\nIMPORTANT: \"Cursor\" alone or \"what is Cursor\" means the Cursor IDE product — research. Database/mouse cursor topics include words like SQL, database, pointer — those are general.\\n\\nRoute = general for EVERYTHING else (movies, celebrities, sports, politics, health, history, travel, science, coding problems unrelated to tooling, random Q&A).\\n\\nIf uncertain, choose general.\\n\\nExamples:\\n- \"Compare Cursor vs Copilot pricing\" -> research\\n- \"what is cursor\" -> research\\n- \"what is a database cursor\" -> general\\n- \"Best AI coding assistant for startups\" -> research\\n- \"what is bahubali 2\" -> general\\n- \"explain photosynthesis\" -> general\\n- \"who won IPL 2023\" -> general' }, { role: 'user', content: $json.pinned_query }], temperature: 0, max_tokens: 3 }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You route requests for a knowledge base about AI coding assistants (Cursor, Copilot, Windsurf, Tabnine, Cody, Codeium, Devin, Replit, v0, etc.).\\n\\nReturn exactly one lowercase word, nothing else: research or general\\n\\nresearch = question belongs in that corpus: named AI dev tools, features, pricing, comparisons, benchmarks, or the AI coding-tool market.\\ngeneral = everything else (movies, sports, trivia, plain CS definitions like GUI or API, database/mouse cursors, homework, etc.).\\n\\nCursor the IDE app → research. SQL/database/mouse cursor → general. Unsure → general.\\n\\nExamples: Cursor vs Copilot → research | what is Cursor → research | what is GUI → general | what is bahubali → general' }, { role: 'user', content: $json.pinned_query }], temperature: 0, max_tokens: 5 }) }}",
         "options": {}
       },
       "id": "router-1",
@@ -63,34 +63,13 @@
     },
     {
       "parameters": {
-        "mode": "combine",
-        "combineBy": "combineByPosition",
-        "numberInputs": 2,
-        "options": {
-          "clashHandling": {
-            "values": {
-              "resolveClash": "preferLast",
-              "mergeMode": "shallowMerge",
-              "overrideEmpty": false
-            }
-          }
-        }
+        "jsCode": "const r = items[0].json;\nconst text = String(r.choices?.[0]?.message?.content || '').trim().toLowerCase();\nconst first = text.split(/[^a-z]+/).find((t) => t.length > 0) || '';\nconst route_label = first === 'research' ? 'research' : 'general';\nconst pin = $('Pin Query').all()[0]?.json?.pinned_query;\nconst pinned_query = pin != null ? String(pin) : '';\nreturn [{ json: { route_label, pinned_query } }];"
       },
-      "id": "merge-pin-router-1",
-      "name": "Merge Pin And Router",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3.2,
-      "position": [700, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "const item = items[0].json;\n// Merge \"add suffix\" uses _1/_2 by input order; Pin may be input 1 or 2 depending on wiring.\nconst pq = item.pinned_query ?? item.pinned_query_1 ?? item.pinned_query_2;\nconst q = String(pq || '').toLowerCase();\nconst choices = item.choices ?? item.choices_1 ?? item.choices_2;\nconst raw = String(choices?.[0]?.message?.content || '').trim().toLowerCase();\nconst firstToken = raw.split(/[^a-z]+/).find(t => t.length > 0) || '';\nconst llmResearch = firstToken === 'research';\nconst offTopic = /\\b(bahubali|baahubali|bollywood|tollywood|hollywood|oscars?|grammy|\\bipl\\b|cricket\\s+match|nba\\s+finals?)\\b/i.test(q);\nconst antiCursor = /\\b(sql|database|mysql|postgres|sqlite|mouse|pointer|blink|oci|cursor\\s+key)\\b/i.test(q);\nconst cursorIDE = /\\bcursor\\b/.test(q) && !antiCursor;\nconst toolingRest = /\\b(copilot|github\\s*copilot|\\bgithub\\b|gitlab|windsurf|tabnine|cody|codeium|sourcegraph|continue\\s*\\.dev|devin|aider|cline|vscode|vs\\s*code|jetbrains|intellij|neovim|\\bide\\b|ai\\s*coding|coding\\s*assistant|code\\s*completion|pair\\s*programm|developer\\s*tools?|dev\\s*tools?|llm\\s+for\\s+code|replit|bolt\\.new|\\bv0\\b|vercel\\s+v0|stackblitz)\\b/i.test(q);\nconst tooling = toolingRest || cursorIDE;\nlet route_label = 'general';\nif (offTopic) route_label = 'general';\nelse if (tooling) route_label = 'research';\nelse if (llmResearch) route_label = 'research';\nreturn [{ json: { ...item, route_label, pinned_query: pq } }];"
-      },
-      "id": "route-gate-1",
-      "name": "Apply Route Gate",
+      "id": "parse-router-1",
+      "name": "Parse Router Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [770, 300]
+      "position": [720, 300]
     },
     {
       "parameters": {
@@ -118,7 +97,7 @@
         "url": "http://host.docker.internal:8000/research",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ query: $('Pin Query').item.json.pinned_query }) }}",
+        "jsonBody": "={{ JSON.stringify({ query: $json.pinned_query }) }}",
         "options": {
           "timeout": 120000
         }
@@ -137,7 +116,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a helpful assistant. Answer the user question directly and concisely. This question is outside the scope of our AI developer tooling knowledge base, so answer from your general knowledge.' }, { role: 'user', content: $('Pin Query').item.json.pinned_query }], temperature: 0.3, max_tokens: 1024 }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a helpful assistant. Answer the user question directly and concisely. This question is outside the scope of our AI developer tooling knowledge base, so answer from your general knowledge.' }, { role: 'user', content: $json.pinned_query }], temperature: 0.3, max_tokens: 1024 }) }}",
         "options": {}
       },
       "id": "general-1",
@@ -193,23 +172,15 @@
     },
     "Pin Query": {
       "main": [
-        [
-          { "node": "Query Router", "type": "main", "index": 0 },
-          { "node": "Merge Pin And Router", "type": "main", "index": 0 }
-        ]
+        [{ "node": "Query Router", "type": "main", "index": 0 }]
       ]
     },
     "Query Router": {
       "main": [
-        [{ "node": "Merge Pin And Router", "type": "main", "index": 1 }]
+        [{ "node": "Parse Router Output", "type": "main", "index": 0 }]
       ]
     },
-    "Merge Pin And Router": {
-      "main": [
-        [{ "node": "Apply Route Gate", "type": "main", "index": 0 }]
-      ]
-    },
-    "Apply Route Gate": {
+    "Parse Router Output": {
       "main": [
         [{ "node": "Route Decision", "type": "main", "index": 0 }]
       ]

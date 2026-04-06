@@ -2,54 +2,25 @@
 from __future__ import annotations
 import re
 
-from app.utils import call_llm, logger
+from app.utils import call_llm
 
-ROUTER_PROMPT = """You are a strict router for an AI developer-tools knowledge base.
-Respond with EXACTLY one lowercase word: research or general. No punctuation.
+ROUTER_PROMPT = """You route requests for a knowledge base about AI coding assistants (products like Cursor, Copilot, Windsurf, Tabnine, Cody, Codeium, Devin, Replit, v0, etc.).
 
-research = query is specifically about AI coding assistants, IDE AI tools, or products like Cursor (the IDE), Copilot, Windsurf, Tabnine, Cody, Codeium, Devin, v0, Replit, and similar — including their pricing, comparisons, or market analysis.
+Return exactly one lowercase English word and nothing else: research or general
 
-IMPORTANT: "Cursor" alone or "what is Cursor" means the Cursor IDE — research.
-Database or GUI cursor topics mention SQL, database, pointer, mouse — those are general.
+research — The user wants information that belongs in that corpus: a named AI dev tool, features, pricing, comparisons, benchmarks, or the AI coding-tool market.
 
-general = everything else (movies, sports, trivia, unrelated coding homework, etc.).
-If unsure, answer general.
+general — Everything else: movies, sports, trivia, school homework, plain CS definitions (GUI, API, HTTP, SQL, recursion), database/mouse cursors, politics, health, etc.
 
-Examples: "Compare Cursor vs Copilot pricing" → research | "what is cursor" → research | "what is a database cursor" → general | "what is bahubali 2" → general"""
+Rules: "Cursor" meaning the Cursor IDE app → research. SQL/database/mouse "cursor" → general. If you are not sure → general.
 
-_TOOLING_REST = re.compile(
-    r"\b(copilot|github\s*copilot|windsurf|tabnine|cody|codeium|sourcegraph|continue\.dev|"
-    r"devin|aider|cline|vscode|vs\s*code|jetbrains|intellij|neovim|\bide\b|ai\s*coding|coding\s*assistant|"
-    r"code\s*completion|pair\s*programm|developer\s*tools?|dev\s*tools?|llm\s+for\s*code|replit|"
-    r"bolt\.new|\bv0\b|vercel\s+v0|stackblitz|gitlab|\bgithub\b)\b",
-    re.I,
-)
-_CURSOR_ANTI = re.compile(
-    r"\b(sql|database|mysql|postgres|sqlite|mouse|pointer|blink|oci|cursor\s+key)\b",
-    re.I,
-)
-_OFF_TOPIC = re.compile(
-    r"\b(bahubali|baahubali|bollywood|tollywood|hollywood|oscars?|grammy|\bipl\b|"
-    r"cricket\s+match|nba\s+finals?)\b",
-    re.I,
-)
+Examples: Compare Cursor vs Copilot → research | what is Cursor → research | what is GUI → general | what is bahubali → general"""
 
 
 def classify_query(query: str) -> str:
     raw, _, _ = call_llm(ROUTER_PROMPT, query, max_tokens=5, temperature=0)
     first = re.sub(r"[^a-z]+", " ", raw.strip().lower()).split()
-    first_word = first[0] if first else ""
-    llm_research = first_word == "research"
-    q = query.lower()
-    if _OFF_TOPIC.search(q):
-        return "general"
-    cursor_ide = re.search(r"\bcursor\b", q, re.I) and not _CURSOR_ANTI.search(q)
-    tooling = bool(_TOOLING_REST.search(query)) or cursor_ide
-    if tooling:
-        return "research"
-    if llm_research:
-        return "research"
-    return "general"
+    return "research" if (first[0] if first else "") == "research" else "general"
 
 
 def direct_gpt_answer(query: str) -> str:
