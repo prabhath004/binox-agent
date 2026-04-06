@@ -2,7 +2,7 @@
 
 An AI research agent that answers complex questions by decomposing them into sub-questions, retrieving evidence from a vector database, compressing memory under strict token/cost constraints, and producing a structured report with sources and trade-offs.
 
-Built with LangGraph (orchestration), ChromaDB (retrieval), OpenAI gpt-4o-mini (planning + synthesis), and FastAPI (API layer).
+Built with LangGraph (research orchestration), ChromaDB (retrieval), OpenAI gpt-4o-mini (planning + synthesis), FastAPI (API layer), and n8n (webhook/proxy layer).
 
 ## Architecture
 
@@ -31,9 +31,10 @@ User Question
 ```
 
 **Orchestration:** LangGraph `StateGraph` with 5 nodes and a conditional loop edge.
-**Retrieval:** ChromaDB with cosine similarity, cross-query deduplication, and relevance filtering (threshold 0.75).
-**Memory:** Three-tier system (working → evidence → compressed) using LLM-powered summarization cascade.
-**Budget:** 4 hard limits enforced at every pipeline node, with automatic cutoff on violation.
+**Retrieval:** ChromaDB with cosine similarity, cross-query deduplication, and duplicate skipping across replan loops.
+**Memory:** Three-tier system (working → evidence → compressed) using an LLM-powered summarization cascade.
+**Budget:** 4 hard limits enforced at every pipeline node, with automatic cutoff on violation and plan-state preservation during forced early synthesis.
+**Safety:** Zero-evidence safeguard prevents the research pipeline from fabricating grounded answers when retrieval returns nothing.
 
 ## Quick Start
 
@@ -54,6 +55,9 @@ python -m app.main "Analyze top AI developer tooling startups, compare pricing, 
 
 # 5. Or start the API server
 uvicorn app.main:app --reload --port 8000
+
+# 6. Run tests
+pytest -q
 ```
 
 ## Pipeline Stages
@@ -75,10 +79,10 @@ Takes the user question and outputs a JSON plan with 3-6 focused sub-questions. 
 ```
 
 ### 2. Retriever (`app/retriever.py`)
-For each sub-question: embeds the query (locally via Chroma's MiniLM model), searches the vector DB, filters by relevance, and deduplicates across sub-questions.
+For each sub-question: embeds the query (locally via Chroma's MiniLM model), searches the vector DB, filters by relevance, and deduplicates across sub-questions and repeated retrieval passes.
 
 - **Relevance filter:** Cosine distance > 0.75 → dropped
-- **Deduplication:** Same chunk appearing for multiple sub-questions is only counted once
+- **Deduplication:** Same chunk appearing for multiple sub-questions or later replan loops is only counted once
 - **Budget enforcement:** Stops when chunk limit (20) is hit
 
 ### 3. Compressor (`app/memory.py`)
@@ -93,7 +97,7 @@ This is a **summarization cascade** — evidence flows through compression at ev
 After retrieval + compression, the replanner examines the evidence and decides if critical gaps exist. If yes, it adds up to 2 new sub-questions and loops back to the retriever. Limited to 2 replans to prevent infinite loops.
 
 ### 5. Synthesizer (`app/synthesizer.py`)
-Produces the final structured report using only the compressed evidence (never the raw corpus). The output includes:
+Produces the final structured report using only the compressed evidence (never the raw corpus). If retrieval returns no usable evidence, synthesis is skipped and the pipeline returns an explicit "no corpus evidence found" result instead of hallucinating a research answer. The output includes:
 - 3-paragraph answer with inline source citations
 - Per-sub-question findings with confidence levels
 - Key insights and limitations
@@ -134,7 +138,7 @@ Four hard limits, all self-defined and configurable per request:
 | Cost per run | $0.05 | After every LLM call | **Hard cutoff** — agent stops, synthesizes immediately |
 | Replans | 2 | Before replan | No more loop-backs, straight to synthesis |
 
-**Hard cutoff:** If cost exceeds $0.05 at ANY pipeline node, a `BudgetExceeded` exception fires, the agent stops all processing, and immediately synthesizes a report from whatever evidence it has. The report documents the cutoff.
+**Hard cutoff:** If cost exceeds $0.05 at ANY pipeline node, a `BudgetExceeded` exception fires, the agent stops all processing, preserves the most recent plan state, and immediately synthesizes a report from whatever evidence it has. The report documents the cutoff.
 
 **Cost tracking:** Uses OpenAI's actual `usage` field from API responses — real token counts, not estimates. Calculated at gpt-4o-mini rates ($0.15/M input, $0.60/M output).
 
@@ -217,19 +221,42 @@ curl -X POST http://localhost:8000/route \
 # Response includes: "routed_to": "direct_gpt"
 ```
 
+If a query is routed to research but the corpus returns zero relevant chunks, `/route` falls back to direct GPT with:
+- `routed_to: "direct_gpt_fallback"`
+- explicit limitations stating that no corpus evidence was found
+- the original research budget/memory report preserved for observability
+
 **`GET /health`** — Health check
+- Returns `status`, `openai_configured`, and `corpus_chunks`
 
 **`GET /docs`** — Interactive Swagger documentation
 
-## n8n Integration (Query Routing + Memory Management)
+## Automated Tests
 
-n8n serves as the external workflow layer for query routing and trigger management, as specified in the reference stack.
+The repo includes a small regression suite covering the failure modes that mattered most during evaluation:
+
+- request validation rejects blank/invalid budgets
+- `Cursor` routing heuristics stay on the research path
+- zero-evidence synthesis does not call the LLM
+- duplicate chunks are not re-added during later retrieval passes
+- `/route` falls back safely when research returns no corpus evidence
+- hard budget cutoff preserves the last known plan/sub-questions
+
+Run with:
+
+```bash
+pytest -q
+```
+
+## n8n Integration (Webhook + Routing Proxy)
+
+n8n serves as the external workflow layer for webhook handling and external triggers, while FastAPI keeps routing and research logic in one place.
 
 ### What n8n does
 
-1. **Query routing** — Classifies incoming queries via OpenAI. Routes AI dev tools questions to the `/research` RAG pipeline. Routes general questions to direct GPT. Prevents wasting budget on queries the corpus can't answer.
-2. **Trigger layer** — The webhook endpoint can be called from Slack, cron jobs, or any external system.
-3. **Input validation** — Rejects malformed requests before they hit the pipeline.
+1. **Trigger layer** — The webhook endpoint can be called from Slack, cron jobs, or any external system.
+2. **Thin request normalization** — Trims and forwards the incoming payload.
+3. **Proxy to FastAPI `/route`** — All classification and routing decisions happen in Python, which keeps one source of truth for query behavior.
 
 ### Setup
 
@@ -248,12 +275,12 @@ docker-compose up
 ### Test via n8n
 
 ```bash
-# AI dev tools query → routed to research pipeline
+# AI dev tools query → FastAPI /route decides to use research pipeline
 curl -X POST http://localhost:5678/webhook/research \
   -H "Content-Type: application/json" \
   -d '{"query": "Compare Cursor vs Copilot pricing"}'
 
-# General query → routed to direct GPT
+# General query → FastAPI /route decides to use direct GPT
 curl -X POST http://localhost:5678/webhook/research \
   -H "Content-Type: application/json" \
   -d '{"query": "What is the capital of France?"}'
@@ -261,7 +288,7 @@ curl -X POST http://localhost:5678/webhook/research \
 
 ### Without Docker
 
-The same routing logic is available directly via the FastAPI `/route` endpoint — no n8n or Docker required. The n8n workflow and the `/route` endpoint implement identical logic.
+The same routing logic is available directly via the FastAPI `/route` endpoint — no n8n or Docker required. The n8n workflow is intentionally thin and simply forwards requests there.
 
 ## Project Structure
 
@@ -290,9 +317,9 @@ The same routing logic is available directly via the FastAPI `/route` endpoint �
 | Component | Choice | Why |
 |---|---|---|
 | Orchestration | LangGraph | Conditional loop (replan → retrieve), shared state graph |
-| Query Routing | n8n + FastAPI /route | Classifies queries, routes to RAG or direct GPT |
+| Query Routing | FastAPI `/route` + n8n webhook | Single routing source of truth plus easy external integration |
 | Vector DB | ChromaDB | Free, local, zero-config, built-in MiniLM embeddings |
 | LLM | gpt-4o-mini | Cheapest OpenAI model with JSON mode — ~$0.002/run |
 | Embeddings | Chroma default (MiniLM-L6-v2) | Free, local, no API key needed |
 | API | FastAPI | Auto-generated docs, async, Pydantic validation |
-| Workflow | n8n | Webhook triggers, query classification, external integrations |
+| Workflow | n8n | Webhook triggers and external integrations without duplicating routing logic |

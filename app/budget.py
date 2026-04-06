@@ -2,7 +2,7 @@
 from __future__ import annotations
 import tiktoken
 from dataclasses import dataclass, field
-from typing import List
+from typing import Any, List
 
 INPUT_COST_PER_1K = 0.00015   # gpt-4o-mini pricing
 OUTPUT_COST_PER_1K = 0.0006
@@ -47,6 +47,36 @@ class BudgetTracker:
         self.config = config or BudgetConfig()
         self.state = BudgetState()
         self._enc = tiktoken.encoding_for_model("gpt-4o-mini")
+        self._plan_snapshot: dict[str, Any] = {
+            "objective": "",
+            "sub_questions": [],
+            "initial_sub_question_count": 0,
+            "success_criteria": "",
+        }
+
+    def remember_plan(
+        self,
+        *,
+        objective: str,
+        sub_questions: list[str],
+        success_criteria: str = "",
+        initial_sub_question_count: int | None = None,
+    ):
+        qs = list(sub_questions)
+        self._plan_snapshot = {
+            "objective": objective,
+            "sub_questions": qs,
+            "initial_sub_question_count": initial_sub_question_count if initial_sub_question_count is not None else len(qs),
+            "success_criteria": success_criteria,
+        }
+
+    def plan_snapshot(self) -> dict[str, Any]:
+        return {
+            "objective": self._plan_snapshot["objective"],
+            "sub_questions": list(self._plan_snapshot["sub_questions"]),
+            "initial_sub_question_count": self._plan_snapshot["initial_sub_question_count"],
+            "success_criteria": self._plan_snapshot["success_criteria"],
+        }
 
     def count_tokens(self, text: str) -> int:
         return len(self._enc.encode(text))

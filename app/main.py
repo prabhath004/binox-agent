@@ -1,16 +1,20 @@
 """FastAPI server + LangGraph pipeline orchestration."""
 from __future__ import annotations
-import time, json, sys, logging
+import json
+import os
+import sys
+import time
 from typing import TypedDict, List, Dict, Any
 
+from fastapi.concurrency import run_in_threadpool
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from langgraph.graph import StateGraph, END
 
 from app.budget import BudgetTracker, BudgetConfig
 from app.memory import MemoryStore, add_evidence, compress_if_needed
 from app.planner import plan, maybe_replan
-from app.retriever import retrieve_all
+from app.retriever import get_corpus_count, retrieve_all
 from app.synthesizer import synthesize
 from app.utils import logger
 
@@ -18,15 +22,31 @@ app = FastAPI(title="Deep Research Agent", version="1.0.0")
 
 
 class ResearchRequest(BaseModel):
-    query: str
-    max_cost_usd: float = 0.05
-    max_chunks: int = 20
-    max_context_tokens: int = 800
-    max_replans: int = 2
+    query: str = Field(..., min_length=1, max_length=2000)
+    max_cost_usd: float = Field(default=0.05, gt=0, le=5)
+    max_chunks: int = Field(default=20, ge=1, le=50)
+    max_context_tokens: int = Field(default=800, ge=200, le=8000)
+    max_replans: int = Field(default=2, ge=0, le=5)
+
+    @field_validator("query")
+    @classmethod
+    def normalize_query(cls, value: str) -> str:
+        query = str(value).strip()
+        if not query:
+            raise ValueError("query must not be empty")
+        return query
 
 
 class ClassifyRequest(BaseModel):
-    query: str
+    query: str = Field(..., min_length=1, max_length=2000)
+
+    @field_validator("query")
+    @classmethod
+    def normalize_query(cls, value: str) -> str:
+        query = str(value).strip()
+        if not query:
+            raise ValueError("query must not be empty")
+        return query
 
 
 class ResearchResponse(BaseModel):
@@ -74,13 +94,21 @@ def _check_hard_limit(budget: BudgetTracker):
 def plan_node(state: AgentState) -> dict:
     budget: BudgetTracker = state["budget_tracker"]
     research_plan = plan(state["query"], budget)
-    _check_hard_limit(budget)
     qs = research_plan.get("sub_questions", [state["query"]])
+    objective = research_plan.get("objective", state["query"])
+    success_criteria = research_plan.get("success_criteria", "")
+    budget.remember_plan(
+        objective=objective,
+        sub_questions=qs,
+        success_criteria=success_criteria,
+        initial_sub_question_count=len(qs),
+    )
+    _check_hard_limit(budget)
     return {
-        "objective": research_plan.get("objective", state["query"]),
+        "objective": objective,
         "sub_questions": qs,
         "initial_sub_question_count": len(qs),
-        "success_criteria": research_plan.get("success_criteria", ""),
+        "success_criteria": success_criteria,
     }
 
 
@@ -140,6 +168,43 @@ def build_graph() -> StateGraph:
 _graph = build_graph().compile()
 
 
+def _has_corpus_evidence(result: dict) -> bool:
+    memory_state = result.get("memory_state", {})
+    return bool(
+        memory_state.get("evidence_chunks", 0)
+        or memory_state.get("compressed_summaries", 0)
+        or str(memory_state.get("working_notes", "")).strip()
+    )
+
+
+def _direct_response(
+    answer: str,
+    *,
+    routed_to: str,
+    limitation_notes: list[str],
+    elapsed_seconds: float,
+    budget_report: dict | None = None,
+    memory_state: dict | None = None,
+    sub_questions: list[str] | None = None,
+    router_label: str | None = None,
+) -> dict:
+    payload = {
+        "answer": answer,
+        "routed_to": routed_to,
+        "sub_questions": sub_questions or [],
+        "sections": [],
+        "key_insights": [],
+        "limitations": limitation_notes,
+        "sources_used": [],
+        "budget_report": budget_report or {"note": "No research pipeline used — direct GPT response"},
+        "memory_state": memory_state or {},
+        "elapsed_seconds": elapsed_seconds,
+    }
+    if router_label is not None:
+        payload["router_label"] = router_label
+    return payload
+
+
 def run_research(request: ResearchRequest) -> dict:
     config = BudgetConfig(
         max_context_tokens_per_step=request.max_context_tokens,
@@ -157,20 +222,32 @@ def run_research(request: ResearchRequest) -> dict:
         "result": {}, "answered_questions": [],
     }
     start = time.time()
+    last_state: AgentState = initial
     try:
-        final = _graph.invoke(initial)
+        for state in _graph.stream(initial, stream_mode="values"):
+            last_state = state
+        final = last_state
         result = final.get("result", {})
         result["sub_questions"] = final.get("sub_questions", [])
         result["initial_sub_question_count"] = final.get("initial_sub_question_count", 0)
     except BudgetExceeded:
         logger.warning("Budget exceeded — forcing early synthesis with available evidence")
+        snapshot = budget.plan_snapshot()
+        memory_store = last_state.get("memory_store", memory)
+        objective = last_state.get("objective") or snapshot["objective"] or initial["query"]
+        sub_questions = last_state.get("sub_questions") or snapshot["sub_questions"] or [initial["query"]]
         result = synthesize(
-            initial["query"], initial.get("sub_questions", [initial["query"]]),
-            memory, budget,
+            objective,
+            sub_questions,
+            memory_store,
+            budget,
         )
-        result["sub_questions"] = initial.get("sub_questions", [])
-        sq = initial.get("sub_questions", [])
-        result["initial_sub_question_count"] = len(sq) if sq else None
+        result["sub_questions"] = sub_questions
+        result["initial_sub_question_count"] = (
+            last_state.get("initial_sub_question_count")
+            or snapshot["initial_sub_question_count"]
+            or len(sub_questions)
+        )
         result.setdefault("limitations", []).append("Research cut short — budget hard limit exceeded")
     result["elapsed_seconds"] = round(time.time() - start, 2)
     return result
@@ -181,7 +258,7 @@ def run_research(request: ResearchRequest) -> dict:
 @app.post("/research", response_model=ResearchResponse)
 async def research_endpoint(request: ResearchRequest):
     try:
-        r = run_research(request)
+        r = await run_in_threadpool(run_research, request)
         return ResearchResponse(
             answer=r.get("answer", ""), sub_questions=r.get("sub_questions", []),
             initial_sub_question_count=r.get("initial_sub_question_count"),
@@ -200,8 +277,8 @@ async def classify_endpoint(body: ClassifyRequest):
     """Route label only (research | general). Single source of truth for n8n + tools."""
     from app.router import classify_query
 
-    q = body.query.strip()
-    route = classify_query(q)
+    route = await run_in_threadpool(classify_query, body.query)
+    q = body.query
     return {"route": route, "query_echo": q}
 
 
@@ -212,36 +289,54 @@ async def route_endpoint(request: ResearchRequest):
     import time
 
     start = time.time()
-    route = classify_query(request.query)
+    route = await run_in_threadpool(classify_query, request.query)
     logger.info("Query routed to: %s", route)
 
     if route == "research":
         try:
-            r = run_research(request)
+            r = await run_in_threadpool(run_research, request)
+            if not _has_corpus_evidence(r):
+                answer = await run_in_threadpool(direct_gpt_answer, request.query)
+                return _direct_response(
+                    answer,
+                    routed_to="direct_gpt_fallback",
+                    router_label=route,
+                    sub_questions=r.get("sub_questions", []),
+                    limitation_notes=[
+                        "No relevant corpus evidence was retrieved for this query.",
+                        "Answered from general knowledge fallback — not from research corpus.",
+                    ],
+                    budget_report=r.get("budget_report", {}),
+                    memory_state=r.get("memory_state", {}),
+                    elapsed_seconds=round(time.time() - start, 2),
+                )
             r["routed_to"] = "research_pipeline"
+            r["router_label"] = route
             return r
         except Exception as e:
             logger.exception("Pipeline failed")
             raise HTTPException(status_code=500, detail=str(e))
     else:
-        answer = direct_gpt_answer(request.query)
-        return {
-            "answer": answer,
-            "routed_to": "direct_gpt",
-            "sub_questions": [],
-            "sections": [],
-            "key_insights": [],
-            "limitations": ["Answered from general knowledge — not from research corpus"],
-            "sources_used": [],
-            "budget_report": {"note": "No research pipeline used — direct GPT response"},
-            "memory_state": {},
-            "elapsed_seconds": round(time.time() - start, 2),
-        }
+        answer = await run_in_threadpool(direct_gpt_answer, request.query)
+        return _direct_response(
+            answer,
+            routed_to="direct_gpt",
+            router_label=route,
+            limitation_notes=["Answered from general knowledge — not from research corpus"],
+            elapsed_seconds=round(time.time() - start, 2),
+        )
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    corpus_chunks = await run_in_threadpool(get_corpus_count)
+    openai_configured = bool(os.getenv("OPENAI_API_KEY"))
+    status = "ok" if corpus_chunks > 0 and openai_configured else "degraded"
+    return {
+        "status": status,
+        "openai_configured": openai_configured,
+        "corpus_chunks": corpus_chunks,
+    }
 
 
 # --- CLI ---

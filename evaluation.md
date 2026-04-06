@@ -18,7 +18,7 @@ Dumping all 12 documents (~8,000 tokens) into a single prompt would fit within G
 
 **The constraint is the point.** Retrieval with a top-k limit (20 chunks max) proves we can scale to a corpus 100x larger without changing architecture. Full-context dumping breaks at scale.
 
-**Relevance filtering improves quality.** Vector similarity + a cosine distance threshold (0.75) means the synthesizer sees only high-signal evidence, reducing hallucination. Deduplication across sub-questions prevents the same chunk consuming multiple budget slots.
+**Relevance filtering improves quality.** Vector similarity + a cosine distance threshold (0.75) means the synthesizer sees only high-signal evidence, reducing hallucination. Deduplication across sub-questions and later replan loops prevents the same chunk consuming multiple budget slots.
 
 **Cost scales with retrieval, not corpus size.** Embedding is a one-time cost (using Chroma's local MiniLM model — zero API cost). Each LLM call receives only the most relevant chunks.
 
@@ -43,6 +43,7 @@ The budget system tracks four dimensions:
 - Cost limit mid-retrieval → remaining sub-questions skipped, report notes what was missed
 - All chunks used → retrieval stops, report notes "chunk budget exhausted"
 - Low-relevance chunks → dropped before entering memory, sorted by relevance score
+- Zero retrieved evidence → synthesis returns an explicit "no relevant corpus evidence found" result instead of fabricating a grounded answer
 
 ## 4. Trade-off: Lower Cost vs. Lower Completeness
 
@@ -64,13 +65,15 @@ The budget system tracks four dimensions:
 
 The reference stack suggests "n8n/Dify for query routing + memory management." We use both n8n and LangGraph, but for different jobs:
 
-**n8n handles external concerns:** query classification, routing, webhook triggers, and integration with external systems (Slack, cron, email). It decides whether a query should go to the RAG pipeline or get a direct GPT answer. This prevents wasting budget on queries outside our corpus (e.g., "What is the capital of France?" goes straight to GPT, never touches ChromaDB).
+**n8n handles external concerns:** webhook triggers and integration with external systems (Slack, cron, email). The imported workflow is intentionally thin: validate request, normalize payload, forward to FastAPI `/route`, return the response. This keeps the visual workflow reproducible without duplicating business logic.
 
-**LangGraph handles internal orchestration:** the 5-node research pipeline with conditional looping, shared state, and budget enforcement. These require code-level control (checking token counts, deciding whether to replan, compressing evidence) that a visual workflow tool can't express cleanly.
+**FastAPI handles routing and validation:** query classification, route selection, request validation, zero-evidence fallback, and health reporting. Keeping this in Python gives one source of truth for behavior, which proved more robust than splitting routing logic between code and the visual workflow.
 
-**The split is deliberate.** n8n is the receptionist (who comes in, what do they need, where do they go). LangGraph is the researcher (decompose, retrieve, compress, synthesize). Each tool does what it's best at.
+**LangGraph handles internal orchestration:** the 5-node research pipeline with conditional looping, shared state, and budget enforcement. These require code-level control (checking token counts, deciding whether to replan, compressing evidence) that a visual workflow tool cannot express cleanly.
 
-**Fallback without Docker:** The same routing logic is also available via FastAPI's `/route` endpoint, which implements identical classification in Python. This ensures the evaluator can test query routing even without running n8n/Docker.
+**The split is deliberate.** n8n is the external trigger/proxy. FastAPI is the router. LangGraph is the researcher. Each layer has a clear ownership boundary.
+
+**Fallback without Docker:** The same routing logic is available directly through FastAPI's `/route` endpoint. This ensures the evaluator can test classification and routing without running n8n/Docker.
 
 ## 6. Chunking Strategy
 
@@ -84,7 +87,16 @@ We use heading-based splitting with merging and title-prefixing, not recursive t
 
 **Result:** Retrieval quality improved dramatically — for "cheapest AI tools", the comparison doc now ranks #1 (distance 0.31) instead of an irrelevant Devin chunk. Company-specific queries now consistently return the correct company's data.
 
-## 7. Design Decisions Summary
+## 7. Reliability Improvements Added After Initial Prototype
+
+The biggest risk in an agentic prototype is not architecture, it is false confidence. Several hardening steps were added to improve evaluator trust:
+
+- **Strict request validation:** blank queries, invalid chunk counts, or nonsensical budget settings are rejected up front by Pydantic instead of producing confusing runtime behavior.
+- **Plan-state preservation on hard cutoff:** if the run exceeds cost budget immediately after planning, the final response still retains the objective and sub-questions already produced instead of collapsing back to the raw input query.
+- **Zero-evidence safeguard:** if retrieval returns nothing relevant, the research path refuses to synthesize a source-grounded answer. `/route` can then fall back to direct GPT with explicit limitations instead of pretending the corpus answered the question.
+- **Automated regression tests:** routing heuristics, zero-evidence handling, duplicate-chunk skipping, validation, and hard-cutoff recovery now have lightweight tests to reduce demo risk.
+
+## 8. Design Decisions Summary
 
 | Decision | Choice | Alternative | Why |
 |----------|--------|-------------|-----|
@@ -94,5 +106,5 @@ We use heading-based splitting with merging and title-prefixing, not recursive t
 | Embedding | Chroma default (MiniLM) | OpenAI text-embedding-3 | Free, local, no API key needed |
 | Memory | Summarization cascade | Sliding window, token pruning | Preserves factual claims while reducing size |
 | API | FastAPI | Flask, n8n webhook | Auto-docs, async, Pydantic validation |
-| Corpus | 12 curated markdown files | Web crawling, PDF parsing | Reproducible, bounded, verifiable results |
-| Query routing | n8n + FastAPI /route | Hardcoded rules, no routing | Classifies queries, avoids wasting budget on off-topic questions |
+| Corpus | 13 curated markdown files | Web crawling, PDF parsing | Reproducible, bounded, verifiable results |
+| Query routing | FastAPI `/route` + thin n8n proxy | Hardcoded rules, no routing | Classifies queries, avoids wasting budget on off-topic questions |

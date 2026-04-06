@@ -21,9 +21,9 @@
           "conditions": [
             {
               "id": "query-check",
-              "leftValue": "={{ $json.body.query }}",
+              "leftValue": "={{ String($json.body?.query ?? '').trim() }}",
               "rightValue": "",
-              "operator": { "type": "string", "operation": "exists" }
+              "operator": { "type": "string", "operation": "notEmpty" }
             }
           ]
         }

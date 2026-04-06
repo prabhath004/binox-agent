@@ -49,7 +49,22 @@ class MemoryStore:
         }
 
 
+def _evidence_key(chunk: EvidenceChunk) -> tuple[str, str]:
+    return chunk.source, chunk.text[:200]
+
+
 def add_evidence(store: MemoryStore, chunks: List[EvidenceChunk], budget: BudgetTracker) -> MemoryStore:
+    existing = {_evidence_key(chunk) for chunk in store.evidence}
+    deduped: List[EvidenceChunk] = []
+    for chunk in chunks:
+        key = _evidence_key(chunk)
+        if key in existing:
+            logger.info("Skipped duplicate chunk already in memory [%s]", chunk.source)
+            continue
+        existing.add(key)
+        deduped.append(chunk)
+
+    chunks = deduped
     remaining = budget.remaining_chunks()
     if len(chunks) > remaining:
         chunks = sorted(chunks, key=lambda c: c.relevance_score, reverse=True)
@@ -71,7 +86,7 @@ def compress_if_needed(store: MemoryStore, budget: BudgetTracker) -> MemoryStore
     logger.info("Compression triggered — evidence is %d tokens (limit %d)",
                 budget.count_tokens(combined), budget.config.max_context_tokens_per_step)
 
-    target = budget.config.max_context_tokens_per_step // 2
+    target = max(128, budget.config.max_context_tokens_per_step // 2)
     system = COMPRESS_PROMPT.format(target_tokens=target)
     summary, pin, pout = call_llm(system, "Compress this evidence:\n\n" + combined, max_tokens=target)
     budget.record_llm_call(pin, pout)
