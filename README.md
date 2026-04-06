@@ -330,7 +330,6 @@ Workflow image:
 | `docs/ARCHITECTURE.md` | simple system explanation |
 | `docs/RUNBOOK.md` | setup, checks, and troubleshooting |
 | `evaluation.md` | design trade-offs |
-| `SELF_ASSESSMENT.md` | honest score against the rubric |
 
 ## Repo Structure
 
