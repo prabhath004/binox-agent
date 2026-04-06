@@ -200,7 +200,9 @@ async def classify_endpoint(body: ClassifyRequest):
     """Route label only (research | general). Single source of truth for n8n + tools."""
     from app.router import classify_query
 
-    return {"route": classify_query(body.query.strip())}
+    q = body.query.strip()
+    route = classify_query(q)
+    return {"route": route, "query_echo": q}
 
 
 @app.post("/route")
