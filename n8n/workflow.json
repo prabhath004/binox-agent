@@ -36,13 +36,23 @@
     },
     {
       "parameters": {
+        "jsCode": "const q = items[0].json?.body?.query;\nif (q === undefined || q === null || String(q).trim() === '') {\n  throw new Error('Missing body.query');\n}\nreturn [{ json: { pinned_query: String(q) } }];"
+      },
+      "id": "pin-query-1",
+      "name": "Pin Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "https://api.openai.com/v1/chat/completions",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a strict query router for an AI developer-tools RAG system.\\nReturn EXACTLY one lowercase word: research or general. No punctuation.\\n\\nRoute = research ONLY if the query is specifically about AI coding/developer tools (e.g., Cursor, Copilot, Windsurf, Tabnine, Cody, Continue, Devin), their features, pricing, comparisons, benchmarks, enterprise adoption, or developer-tooling market analysis.\\n\\nRoute = general for EVERYTHING else (movies, celebrities, sports, politics, health, history, travel, science, coding problems unrelated to tooling, random Q&A).\\n\\nIf uncertain, choose general.\\n\\nExamples:\\n- \"Compare Cursor vs Copilot pricing\" -> research\\n- \"Best AI coding assistant for startups\" -> research\\n- \"what is bahubali 2\" -> general\\n- \"explain photosynthesis\" -> general\\n- \"who won IPL 2023\" -> general' }, { role: 'user', content: $json.body.query }], temperature: 0, max_tokens: 3 }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a strict query router for an AI developer-tools RAG system.\\nReturn EXACTLY one lowercase word: research or general. No punctuation.\\n\\nRoute = research ONLY if the query is specifically about AI coding/developer tools (e.g., Cursor, Copilot, Windsurf, Tabnine, Cody, Continue, Devin), their features, pricing, comparisons, benchmarks, enterprise adoption, or developer-tooling market analysis.\\n\\nRoute = general for EVERYTHING else (movies, celebrities, sports, politics, health, history, travel, science, coding problems unrelated to tooling, random Q&A).\\n\\nIf uncertain, choose general.\\n\\nExamples:\\n- \"Compare Cursor vs Copilot pricing\" -> research\\n- \"Best AI coding assistant for startups\" -> research\\n- \"what is bahubali 2\" -> general\\n- \"explain photosynthesis\" -> general\\n- \"who won IPL 2023\" -> general' }, { role: 'user', content: $json.pinned_query }], temperature: 0, max_tokens: 3 }) }}",
         "options": {}
       },
       "id": "router-1",
@@ -53,7 +63,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const item = items[0].json;\nconst q = String($('Webhook').item.json.body?.query || '').toLowerCase();\nconst raw = String(item.choices?.[0]?.message?.content || '').trim().toLowerCase();\nconst firstToken = raw.split(/[^a-z]+/).find(t => t.length > 0) || '';\nconst llmResearch = firstToken === 'research';\nconst tooling = /\\b(cursor|copilot|github\\s*copilot|\\bgithub\\b|gitlab|windsurf|tabnine|cody|codeium|sourcegraph|continue\\s*\\.dev|devin|aider|cline|vscode|vs\\s*code|jetbrains|intellij|neovim|\\bide\\b|ai\\s*coding|coding\\s*assistant|code\\s*completion|pair\\s*programm|developer\\s*tools?|dev\\s*tools?|llm\\s+for\\s+code|replit|bolt\\.new|\\bv0\\b|vercel\\s+v0|stackblitz)\\b/i.test(q);\nconst route_label = llmResearch && tooling ? 'research' : 'general';\nreturn { json: { ...item, route_label } };"
+        "jsCode": "const item = items[0].json;\nconst q = String($('Pin Query').item.json.pinned_query || '').toLowerCase();\nconst raw = String(item.choices?.[0]?.message?.content || '').trim().toLowerCase();\nconst firstToken = raw.split(/[^a-z]+/).find(t => t.length > 0) || '';\nconst llmResearch = firstToken === 'research';\nconst tooling = /\\b(cursor|copilot|github\\s*copilot|\\bgithub\\b|gitlab|windsurf|tabnine|cody|codeium|sourcegraph|continue\\s*\\.dev|devin|aider|cline|vscode|vs\\s*code|jetbrains|intellij|neovim|\\bide\\b|ai\\s*coding|coding\\s*assistant|code\\s*completion|pair\\s*programm|developer\\s*tools?|dev\\s*tools?|llm\\s+for\\s+code|replit|bolt\\.new|\\bv0\\b|vercel\\s+v0|stackblitz)\\b/i.test(q);\nconst route_label = llmResearch && tooling ? 'research' : 'general';\nreturn [{ json: { ...item, route_label } }];"
       },
       "id": "route-gate-1",
       "name": "Apply Route Gate",
@@ -69,7 +79,7 @@
             {
               "id": "route-check",
               "leftValue": "={{ $json.route_label }}",
-              "rightValue": "research",
+              "rightValue": "general",
               "operator": { "type": "string", "operation": "equals" }
             }
           ]
@@ -87,7 +97,7 @@
         "url": "http://host.docker.internal:8000/research",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ query: $('Webhook').item.json.body.query }) }}",
+        "jsonBody": "={{ JSON.stringify({ query: $('Pin Query').item.json.pinned_query }) }}",
         "options": {
           "timeout": 120000
         }
@@ -106,7 +116,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a helpful assistant. Answer the user question directly and concisely. This question is outside the scope of our AI developer tooling knowledge base, so answer from your general knowledge.' }, { role: 'user', content: $('Webhook').item.json.body.query }], temperature: 0.3, max_tokens: 1024 }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a helpful assistant. Answer the user question directly and concisely. This question is outside the scope of our AI developer tooling knowledge base, so answer from your general knowledge.' }, { role: 'user', content: $('Pin Query').item.json.pinned_query }], temperature: 0.3, max_tokens: 1024 }) }}",
         "options": {}
       },
       "id": "general-1",
@@ -156,8 +166,13 @@
     },
     "Validate Input": {
       "main": [
-        [{ "node": "Query Router", "type": "main", "index": 0 }],
+        [{ "node": "Pin Query", "type": "main", "index": 0 }],
         [{ "node": "Missing Query Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Pin Query": {
+      "main": [
+        [{ "node": "Query Router", "type": "main", "index": 0 }]
       ]
     },
     "Query Router": {
@@ -172,8 +187,8 @@
     },
     "Route Decision": {
       "main": [
-        [{ "node": "Research Pipeline (RAG)", "type": "main", "index": 0 }],
-        [{ "node": "Direct GPT (General)", "type": "main", "index": 0 }]
+        [{ "node": "Direct GPT (General)", "type": "main", "index": 0 }],
+        [{ "node": "Research Pipeline (RAG)", "type": "main", "index": 0 }]
       ]
     },
     "Research Pipeline (RAG)": {
