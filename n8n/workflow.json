@@ -36,12 +36,19 @@
     },
     {
       "parameters": {
-        "jsCode": "const query = (($json.body && $json.body.query) ? String($json.body.query) : '').toLowerCase();\nconst toolingPattern = /\\b(cursor|copilot|github copilot|windsurf|tabnine|cody|continue|devin|aider|cline|ai coding|coding assistant|code completion|autocomplete|developer tools|dev tools)\\b/;\nreturn { json: { ...$json, route: toolingPattern.test(query) ? 'research' : 'general' } };"
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'Classify the user query into exactly one label: research or general.\\nReturn ONLY one lowercase word.\\nUse research only when the query is specifically about AI developer tools, coding assistants, IDE AI editors, their pricing, comparisons, benchmarks, or developer-tooling market analysis.\\nUse general for everything else.' }, { role: 'user', content: $json.body.query }], temperature: 0, max_tokens: 5 }) }}",
+        "options": {}
       },
-      "id": "route-set-1",
-      "name": "Set Route",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "id": "router-1",
+      "name": "Query Router",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
       "position": [620, 300]
     },
     {
@@ -51,7 +58,7 @@
           "conditions": [
             {
               "id": "route-check",
-              "leftValue": "={{ $json.route }}",
+              "leftValue": "={{ (($json.choices?.[0]?.message?.content || '').trim().toLowerCase()) }}",
               "rightValue": "research",
               "operator": { "type": "string", "operation": "equals" }
             }
@@ -139,11 +146,11 @@
     },
     "Validate Input": {
       "main": [
-        [{ "node": "Set Route", "type": "main", "index": 0 }],
+        [{ "node": "Query Router", "type": "main", "index": 0 }],
         [{ "node": "Missing Query Error", "type": "main", "index": 0 }]
       ]
     },
-    "Set Route": {
+    "Query Router": {
       "main": [
         [{ "node": "Route Decision", "type": "main", "index": 0 }]
       ]
