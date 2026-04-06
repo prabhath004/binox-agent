@@ -36,12 +36,22 @@
     },
     {
       "parameters": {
+        "jsCode": "const query = (($json.body && $json.body.query) ? String($json.body.query) : '').toLowerCase();\nconst toolingPattern = /\\b(cursor|copilot|github copilot|windsurf|tabnine|cody|continue|devin|aider|cline|ai coding|coding assistant|code completion|autocomplete|developer tools|dev tools)\\b/;\nreturn { json: { ...$json, route: toolingPattern.test(query) ? 'research' : 'general' } };"
+      },
+      "id": "route-set-1",
+      "name": "Set Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [620, 300]
+    },
+    {
+      "parameters": {
         "conditions": {
           "options": { "caseSensitive": false },
           "conditions": [
             {
               "id": "route-check",
-              "leftValue": "={{ (() => { const q = (($json.body && $json.body.query) ? $json.body.query : '').toLowerCase(); return /\\b(cursor|copilot|github copilot|windsurf|tabnine|cody|continue|devin|aider|cline|ai coding|coding assistant|code completion|autocomplete|developer tools|dev tools)\\b/.test(q) ? 'research' : 'general'; })() }}",
+              "leftValue": "={{ $json.route }}",
               "rightValue": "research",
               "operator": { "type": "string", "operation": "equals" }
             }
@@ -129,8 +139,13 @@
     },
     "Validate Input": {
       "main": [
-        [{ "node": "Route Decision", "type": "main", "index": 0 }],
+        [{ "node": "Set Route", "type": "main", "index": 0 }],
         [{ "node": "Missing Query Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Set Route": {
+      "main": [
+        [{ "node": "Route Decision", "type": "main", "index": 0 }]
       ]
     },
     "Route Decision": {
