@@ -328,13 +328,5 @@ n8n/
   workflow.json       Thin webhook + proxy workflow
 ```
 
-## Known Limitations
-
-This is a strong prototype, not a finished production system. The main remaining gaps are:
-
-- no retrieval reranker beyond vector similarity
-- synchronous OpenAI client under the hood, wrapped in threadpool at the API boundary
-- no benchmark dataset for quantitative answer-quality scoring
-- local Docker/n8n setup is development-oriented, not hardened for deployment
-- corpus is curated and bounded rather than dynamically crawled
+dynamically crawled
 
