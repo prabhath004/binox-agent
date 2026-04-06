@@ -185,8 +185,8 @@
     },
     "Route Decision": {
       "main": [
-        [{ "node": "Direct GPT (General)", "type": "main", "index": 0 }],
-        [{ "node": "Research Pipeline (RAG)", "type": "main", "index": 0 }]
+        [{ "node": "Research Pipeline (RAG)", "type": "main", "index": 0 }],
+        [{ "node": "Direct GPT (General)", "type": "main", "index": 0 }]
       ]
     },
     "Research Pipeline (RAG)": {
