@@ -354,26 +354,4 @@ n8n/
   workflow.json       thin webhook flow
 ```
 
-## Known Gaps
 
-This is a strong prototype, but not a finished production system.
-
-Main gaps still left:
-
-- no reranker on top of vector search
-- no full benchmark set for answer quality
-- OpenAI calls are still sync under the hood
-- n8n setup is meant for local use, not a hardened shared deployment
-- the document set is small and hand-picked
-
-## Final Note
-
-This project meets the task in a clear and testable way:
-
-- it breaks down harder questions
-- it works under set limits
-- it uses a real memory plan
-- it includes workflow tooling
-- it documents the design choices openly
-
-For the deeper design write-up, read [evaluation.md](evaluation.md).
