@@ -20,7 +20,7 @@
           "options": { "caseSensitive": false },
           "conditions": [
             {
-              "id": "cache-check",
+              "id": "query-check",
               "leftValue": "={{ $json.body.query }}",
               "rightValue": "",
               "operator": { "type": "string", "operation": "exists" }
@@ -36,102 +36,30 @@
     },
     {
       "parameters": {
-        "jsCode": "const q = items[0].json?.body?.query;\nif (q === undefined || q === null || String(q).trim() === '') {\n  throw new Error('Missing body.query');\n}\nreturn [{ json: { pinned_query: String(q) } }];"
+        "jsCode": "const body = items[0].json?.body ?? {};\nconst query = body.query == null ? '' : String(body.query).trim();\nif (!query) {\n  throw new Error('Missing body.query');\n}\nreturn [{ json: {\n  query,\n  max_cost_usd: body.max_cost_usd,\n  max_chunks: body.max_chunks,\n  max_context_tokens: body.max_context_tokens,\n  max_replans: body.max_replans,\n} }];"
       },
-      "id": "pin-query-1",
-      "name": "Pin Query",
+      "id": "normalize-1",
+      "name": "Normalize Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [520, 300]
+      "position": [620, 300]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8000/classify",
+        "url": "http://host.docker.internal:8000/route",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ query: $json.pinned_query }) }}",
-        "options": {}
-      },
-      "id": "router-1",
-      "name": "Classify query (API)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
-      "position": [626, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "// Reads POST /classify JSON only: { route, query_echo }. Handles n8n HTTP wrappers (body/data) once.\nfunction routeFrom(r) {\n  if (!r || typeof r !== 'object') return '';\n  const pick = (o) => (o && typeof o.route === 'string' ? o.route.trim() : '');\n  let s = pick(r);\n  if (s) return s;\n  for (const k of ['body', 'data', 'json']) {\n    const v = r[k];\n    if (v && typeof v === 'object') {\n      s = pick(v);\n      if (s) return s;\n    }\n    if (typeof v === 'string') {\n      try {\n        const p = JSON.parse(v);\n        s = pick(p);\n        if (s) return s;\n      } catch (e) {}\n    }\n  }\n  return '';\n}\nconst r = items[0].json;\nconst raw = routeFrom(r).toLowerCase();\nif (!['research', 'general'].includes(raw)) {\n  throw new Error(`Classifier returned an invalid route: ${JSON.stringify(r)}`);\n}\nconst pin = $('Pin Query').all()[0]?.json?.pinned_query;\nconst pinned_query = pin != null ? String(pin) : '';\nreturn [{ json: { route_label: raw, pinned_query, classify_api_route: raw } }];"
-      },
-      "id": "parse-router-1",
-      "name": "Parse Router Output",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [720, 300]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": false },
-          "conditions": [
-            {
-              "id": "route-check",
-              "leftValue": "={{ $json.route_label }}",
-              "rightValue": "research",
-              "operator": { "type": "string", "operation": "equals" }
-            }
-          ]
-        }
-      },
-      "id": "switch-1",
-      "name": "Route Decision",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [900, 300]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "http://host.docker.internal:8000/research",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ query: $json.pinned_query }) }}",
+        "jsonBody": "={{ JSON.stringify(Object.fromEntries(Object.entries($json).filter(([_, v]) => v !== undefined))) }}",
         "options": {
           "timeout": 120000
         }
       },
-      "id": "research-1",
-      "name": "Research Pipeline (RAG)",
+      "id": "route-1",
+      "name": "Route Query (API)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [1100, 200]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "https://api.openai.com/v1/chat/completions",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a helpful assistant. Answer the user question directly and concisely. This question is outside the scope of our AI developer tooling knowledge base, so answer from your general knowledge.' }, { role: 'user', content: $json.pinned_query }], temperature: 0.3, max_tokens: 1024 }) }}",
-        "options": {}
-      },
-      "id": "general-1",
-      "name": "Direct GPT (General)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
-      "position": [1100, 420]
-    },
-    {
-      "parameters": {
-        "jsCode": "const input = items?.[0]?.json ?? {};\n\n// If this came from the research pipeline, it's already in the desired schema.\nif (typeof input.answer === 'string' && Array.isArray(input.sub_questions) && input.budget_report) {\n  return { json: input };\n}\n\n// Otherwise, treat it as an OpenAI Chat Completions response from Direct GPT.\nconst answer = input.choices?.[0]?.message?.content || input.message?.content || 'No answer';\nreturn {\n  json: {\n    answer,\n    sub_questions: [],\n    sections: [],\n    key_insights: [],\n    limitations: ['Answered from general knowledge - not from research corpus'],\n    sources_used: [],\n    budget_report: { note: 'No research pipeline used - direct GPT response' },\n    memory_state: {},\n    elapsed_seconds: 0\n  }\n};"
-      },
-      "id": "format-1",
-      "name": "Format Response",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1300, 300]
+      "position": [840, 300]
     },
     {
       "parameters": {
@@ -142,7 +70,7 @@
       "name": "Respond",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [1500, 300]
+      "position": [1060, 300]
     },
     {
       "parameters": {
@@ -164,42 +92,16 @@
     },
     "Validate Input": {
       "main": [
-        [{ "node": "Pin Query", "type": "main", "index": 0 }],
+        [{ "node": "Normalize Request", "type": "main", "index": 0 }],
         [{ "node": "Missing Query Error", "type": "main", "index": 0 }]
       ]
     },
-    "Pin Query": {
+    "Normalize Request": {
       "main": [
-        [{ "node": "Classify query (API)", "type": "main", "index": 0 }]
+        [{ "node": "Route Query (API)", "type": "main", "index": 0 }]
       ]
     },
-    "Classify query (API)": {
-      "main": [
-        [{ "node": "Parse Router Output", "type": "main", "index": 0 }]
-      ]
-    },
-    "Parse Router Output": {
-      "main": [
-        [{ "node": "Route Decision", "type": "main", "index": 0 }]
-      ]
-    },
-    "Route Decision": {
-      "main": [
-        [{ "node": "Research Pipeline (RAG)", "type": "main", "index": 0 }],
-        [{ "node": "Direct GPT (General)", "type": "main", "index": 0 }]
-      ]
-    },
-    "Research Pipeline (RAG)": {
-      "main": [
-        [{ "node": "Format Response", "type": "main", "index": 0 }]
-      ]
-    },
-    "Direct GPT (General)": {
-      "main": [
-        [{ "node": "Format Response", "type": "main", "index": 0 }]
-      ]
-    },
-    "Format Response": {
+    "Route Query (API)": {
       "main": [
         [{ "node": "Respond", "type": "main", "index": 0 }]
       ]
