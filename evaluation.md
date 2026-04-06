@@ -228,13 +228,5 @@ Main remaining limitations:
 | Workflow tool | n8n | External integration layer without duplicating core logic |
 | Corpus | Curated markdown files | Reproducible and inspectable for assessment purposes |
 
-## Closing Position
-
-The strongest claim this submission makes is not "the model is smart." It is:
-
-- the system is bounded
-- the design choices are deliberate
-- the failure modes are increasingly explicit
-- the implementation is documented and testable
 
 That is the right shape for a deep-research assessment built around constraints rather than unconstrained generation.
