@@ -25,6 +25,10 @@ class ResearchRequest(BaseModel):
     max_replans: int = 2
 
 
+class ClassifyRequest(BaseModel):
+    query: str
+
+
 class ResearchResponse(BaseModel):
     answer: str
     sub_questions: List[str]
@@ -189,6 +193,14 @@ async def research_endpoint(request: ResearchRequest):
     except Exception as e:
         logger.exception("Pipeline failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/classify")
+async def classify_endpoint(body: ClassifyRequest):
+    """Route label only (research | general). Single source of truth for n8n + tools."""
+    from app.router import classify_query
+
+    return {"route": classify_query(body.query.strip())}
 
 
 @app.post("/route")

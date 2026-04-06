@@ -47,23 +47,21 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://api.openai.com/v1/chat/completions",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "url": "http://host.docker.internal:8000/classify",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You route requests for a knowledge base about AI coding assistants (Cursor, Copilot, Windsurf, Tabnine, Cody, Codeium, Devin, Replit, v0, etc.).\\n\\nReturn exactly one lowercase word, nothing else: research or general\\n\\nresearch = question belongs in that corpus: named AI dev tools, features, pricing, comparisons, benchmarks, or the AI coding-tool market.\\ngeneral = everything else (movies, sports, trivia, plain CS definitions like GUI or API, database/mouse cursors, homework, etc.).\\n\\nCursor the IDE app → research. SQL/database/mouse cursor → general. Unsure → general.\\n\\nExamples: Cursor vs Copilot → research | what is Cursor → research | what is GUI → general | what is bahubali → general' }, { role: 'user', content: $json.pinned_query }], temperature: 0, max_tokens: 5 }) }}",
+        "jsonBody": "={{ JSON.stringify({ query: $json.pinned_query }) }}",
         "options": {}
       },
       "id": "router-1",
-      "name": "Query Router",
+      "name": "Classify query (API)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
       "position": [626, 300]
     },
     {
       "parameters": {
-        "jsCode": "const r = items[0].json;\nconst text = String(r.choices?.[0]?.message?.content || '').trim().toLowerCase();\nconst first = text.split(/[^a-z]+/).find((t) => t.length > 0) || '';\nconst route_label = first === 'research' ? 'research' : 'general';\nconst pin = $('Pin Query').all()[0]?.json?.pinned_query;\nconst pinned_query = pin != null ? String(pin) : '';\nreturn [{ json: { route_label, pinned_query } }];"
+        "jsCode": "const r = items[0].json;\nconst v = String(r.route || '').toLowerCase().trim();\nconst route_label = v === 'research' ? 'research' : 'general';\nconst pin = $('Pin Query').all()[0]?.json?.pinned_query;\nconst pinned_query = pin != null ? String(pin) : '';\nreturn [{ json: { route_label, pinned_query } }];"
       },
       "id": "parse-router-1",
       "name": "Parse Router Output",
@@ -172,10 +170,10 @@
     },
     "Pin Query": {
       "main": [
-        [{ "node": "Query Router", "type": "main", "index": 0 }]
+        [{ "node": "Classify query (API)", "type": "main", "index": 0 }]
       ]
     },
-    "Query Router": {
+    "Classify query (API)": {
       "main": [
         [{ "node": "Parse Router Output", "type": "main", "index": 0 }]
       ]
