@@ -338,14 +338,3 @@ This is a strong prototype, not a finished production system. The main remaining
 - local Docker/n8n setup is development-oriented, not hardened for deployment
 - corpus is curated and bounded rather than dynamically crawled
 
-## Why This Is Defensible as a Submission
-
-The project now satisfies the assignment intent in a way that is both testable and explainable:
-
-- multi-part research questions are decomposed
-- memory and budget constraints are explicit and enforced
-- retrieval remains bounded and observable
-- architecture trade-offs are documented
-- workflow tooling is present without duplicating core logic
-
-For a rubric-facing summary, see [SELF_ASSESSMENT.md](SELF_ASSESSMENT.md).
