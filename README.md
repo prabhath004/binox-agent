@@ -257,6 +257,8 @@ n8n serves as the external workflow layer for webhook handling and external trig
 1. **Trigger layer** — The webhook endpoint can be called from Slack, cron jobs, or any external system.
 2. **Thin request normalization** — Trims and forwards the incoming payload.
 3. **Proxy to FastAPI `/route`** — All classification and routing decisions happen in Python, which keeps one source of truth for query behavior.
+   <img width="1077" height="485" alt="image" src="https://github.com/user-attachments/assets/d239ec70-bb1a-4da2-a0e9-55ad3861106b" />
+
 
 ### Setup
 
