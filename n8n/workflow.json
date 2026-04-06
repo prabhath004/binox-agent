@@ -41,7 +41,7 @@
           "conditions": [
             {
               "id": "route-check",
-              "leftValue": "={{ /\\b(cursor|copilot|github copilot|windsurf|tabnine|cody|continue|devin|aider|cline|ide|editor|vscode|vs code|coding assistant|ai coding|code completion|autocomplete|developer tools|dev tools|pricing|subscription|license)\\b/i.test($('Webhook').item.json.body.query) ? 'research' : 'general' }}",
+              "leftValue": "={{ (() => { const q = (($json.body && $json.body.query) ? $json.body.query : '').toLowerCase(); return /\\b(cursor|copilot|github copilot|windsurf|tabnine|cody|continue|devin|aider|cline|ai coding|coding assistant|code completion|autocomplete|developer tools|dev tools)\\b/.test(q) ? 'research' : 'general'; })() }}",
               "rightValue": "research",
               "operator": { "type": "string", "operation": "equals" }
             }
