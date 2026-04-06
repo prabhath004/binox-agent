@@ -1,183 +1,137 @@
 # Architecture
 
-This document describes the system beyond the high-level README. It focuses on component responsibilities, request flow, memory behavior, and failure handling.
+This file explains the system in simple terms.
 
-## 1. Component Map
+## Main Idea
+
+The app answers some questions by doing research over a local document set. It does not send every question through the full research flow. First it decides whether the question is:
+
+- a normal general question
+- or a question that should use the local research docs
+
+## Big Picture
 
 ```mermaid
 flowchart TD
-    U[External Caller] --> N[n8n Webhook]
+    U[User] --> N[n8n Webhook]
     N --> F[FastAPI]
-
-    subgraph API[FastAPI Layer]
-        F --> R[/route]
-        F --> C[/classify]
-        F --> Q[/research]
-        F --> H[/health]
-    end
-
-    R --> ROUTER[Router]
-    ROUTER -->|general| GPT[Direct GPT Answer]
-    ROUTER -->|research| GRAPH[LangGraph Pipeline]
-
-    subgraph PIPE[LangGraph Pipeline]
-        GRAPH --> P[Planner]
-        P --> RET[Retriever]
-        RET --> MEM[Memory Store]
-        MEM --> COMP[Compressor]
-        COMP --> REP[Replanner]
-        REP -->|new questions| RET
-        REP -->|done| SYN[Synthesizer]
-    end
-
-    RET --> CHROMA[ChromaDB]
-    SYN --> OUT[Response]
-    GPT --> OUT
+    F --> R[/route]
+    R --> C{Research or General}
+    C -->|General| G[Direct GPT Answer]
+    C -->|Research| P[Research Flow]
+    P --> O[Final Response]
+    G --> O
 ```
 
-## 2. Request Flows
-
-### General query
-
-1. Request enters through FastAPI `/route` directly or through the n8n webhook.
-2. Router classifies the query as `general`.
-3. The system calls direct GPT answer generation.
-4. Response is returned with `routed_to: "direct_gpt"`.
-
-### In-scope research query
-
-1. Request enters `/route`.
-2. Router classifies the query as `research`.
-3. LangGraph research pipeline runs:
-   - plan
-   - retrieve
-   - compress if needed
-   - replan if needed
-   - synthesize
-4. Response is returned with `routed_to: "research_pipeline"`.
-
-### Research query with zero evidence
-
-1. Request enters `/route`.
-2. Router classifies the query as `research`.
-3. Research pipeline runs but retrieval finds no usable evidence.
-4. Synthesizer refuses to fabricate a grounded answer.
-5. `/route` can return a safe fallback direct answer with explicit limitations and preserved research budget state.
-
-## 3. Why the System Uses Two Front Doors
-
-### FastAPI
-
-FastAPI is the authoritative runtime surface. It owns:
-
-- validation
-- routing behavior
-- research execution
-- health reporting
-- API docs
+## What Each Part Does
 
 ### n8n
 
-n8n exists as the integration shell. It is intentionally thin and does not duplicate business logic. That keeps routing behavior consistent whether the query comes from:
+n8n is the outside wrapper.
 
-- curl
-- Swagger
-- n8n
-- future Slack or automation hooks
+It:
 
-## 4. Research Pipeline Stages
+- receives webhook calls
+- does a small input check
+- forwards the request to FastAPI
 
-### Planner
+It does not run the real research logic.
 
-Turns one user question into a small set of searchable sub-questions plus an objective. This reduces the chance that retrieval misses important aspects of a compound question.
+### FastAPI
 
-### Retriever
+FastAPI is the main app.
 
-Queries ChromaDB for each pending sub-question. Applies:
+It:
 
-- top-k retrieval
-- relevance threshold
-- duplicate suppression
+- checks the input
+- decides which path the question should take
+- runs the research flow when needed
+- returns the final result
 
-Duplicate suppression now covers both:
+### LangGraph
 
-- duplicates across multiple sub-questions
-- duplicates across later replan loops
+LangGraph runs the step-by-step research flow:
 
-### Memory Store
+1. plan
+2. search
+3. shorten notes if needed
+4. ask follow-up questions if needed
+5. write the final answer
 
-The memory store tracks:
+### ChromaDB
 
-- raw evidence chunks
-- compressed summaries
-- skipped chunks due to budget pressure
-- working notes
+ChromaDB stores the local document chunks and helps find the most relevant ones for each smaller question.
 
-### Compressor
+## Research Flow
 
-If accumulated evidence exceeds the configured context budget, evidence is compressed into dense research notes. This makes later prompts smaller and cheaper.
+### 1. Plan
 
-### Replanner
+The app turns one large question into a few smaller questions. This helps the search step focus on one thing at a time.
 
-Examines coverage gaps after retrieval and compression. Adds new sub-questions only when necessary, and only up to the configured replan limit.
+### 2. Search
 
-### Synthesizer
+The app searches the local docs for each smaller question.
 
-Builds the final structured answer from the current memory state. It now has a strict zero-evidence safeguard: no evidence means no claim of grounded research.
+It also:
 
-## 5. Memory Model
+- filters weak matches
+- avoids re-adding the same chunk again
 
-```text
-Tier 1: Working Context
-  Short-lived per-step prompt state
+### 3. Shorten Notes
 
-Tier 2: Evidence Chunks
-  Raw retrieved facts across steps
+If the saved notes get too long, the app shortens them so later prompts stay inside the token limit.
 
-Tier 3: Compressed Summaries
-  Durable, condensed research notes used when token pressure increases
-```
+### 4. Add More Questions
 
-Why this design:
+If the app still has a big gap, it can add a small number of extra questions and search again.
 
-- better than truncation
-- cheaper than re-sending all raw evidence
-- still keeps the answer grounded in retrieved material
+### 5. Write Final Answer
 
-## 6. Constraint Enforcement
+The app writes the final answer using the saved notes.
 
-The project is intentionally explicit about constraints.
+If no useful evidence was found, it does not pretend the answer came from the local docs.
 
-| Dimension | Mechanism |
-|---|---|
-| Tokens | `needs_compression()` and prompt trimming |
-| Cost | `BudgetTracker` with post-call accounting |
-| Retrieved chunks | bounded through `remaining_chunks()` |
-| Replans | bounded through `can_replan()` |
+## Memory Plan
 
-If the cost limit is breached, the graph stops and the current best-known state is used for early synthesis.
+The app keeps memory in three simple layers:
 
-## 7. Reliability Decisions
+1. current step notes
+2. saved evidence chunks
+3. shorter summary notes
 
-Several implementation choices were made specifically to reduce evaluator-facing failure modes.
+This is better than just cutting off old text because cutting off old text can remove useful facts too early.
 
-### Strict request validation
+## Limits
 
-Blank queries and invalid numeric settings are rejected early.
+The app has clear built-in limits:
 
-### Plan snapshot preservation
+- max prompt size per step
+- max number of retrieved chunks
+- max dollar cost per run
+- max number of extra planning rounds
 
-If budget is exceeded immediately after planning, the final response still contains the planned objective and sub-questions.
+These limits help keep the app:
 
-### Zero-evidence behavior
+- cheaper
+- easier to predict
+- easier to debug
 
-If retrieval returns nothing relevant:
+## Safety Choices
 
-- synthesis does not invent grounded claims
-- the router can fall back to a clearly labeled general-knowledge answer instead
+I added a few simple safety choices to make the system more trustworthy:
 
-### Threadpool boundary
+- bad requests fail early
+- no-evidence research does not fake grounded answers
+- if the run stops early because of cost, the planned sub-questions are still kept
 
-The app keeps synchronous OpenAI calls out of the main FastAPI event loop by using `run_in_threadpool()` at the API boundary.
+## Why This Fits The Task
 
-ile keeping the core behavior testable and bounded. It is intentionally stronger on clarity and reliability than on maximal agent autonomy.
+The task asked for:
+
+- a research agent
+- a memory plan
+- clear limits
+- workflow tooling
+- trade-off notes
+
+This design hits those points while keeping the system understandable and testable.

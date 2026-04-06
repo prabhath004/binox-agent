@@ -1,105 +1,99 @@
 # Self-Assessment
 
-This document maps the submission against the assessment rubric in a direct way. The intent is to be honest about both strengths and remaining gaps.
+This is my honest review of the submission against the rubric.
 
-## Overall Position
+## Overall View
 
-This submission is stronger on architecture, reasoning, and documentation than on production-scale hardening. It is a solid prototype with meaningful safeguards, not a finished platform.
+This project is stronger on clear thinking, structure, and documentation than on full production hardening. It is a solid working prototype with good guardrails.
 
-## 1. Technical Execution (40%)
+## 1. Technical Execution
 
-### What is strong
+### What went well
 
-- The system is a real working prototype, not a prompt wrapper.
-- Query routing, research orchestration, retrieval, memory compression, and synthesis are separated cleanly.
-- Hard limits exist for cost, chunks, context, and replans.
-- The runtime now handles important edge cases explicitly:
-  - invalid inputs are rejected
-  - zero-evidence research does not hallucinate a grounded answer
-  - hard budget cutoffs preserve the last known plan state
-- Regression tests cover the main failure modes most likely to be probed during review.
+- The project is a real working system, not just a prompt wrapper.
+- The main parts are separated clearly: routing, planning, search, memory, and final answer writing.
+- The app has clear limits for cost, chunk count, prompt size, and extra research rounds.
+- Important edge cases are handled better now:
+  - bad input fails early
+  - no-evidence research does not fake a grounded answer
+  - early budget cutoffs still keep the planned sub-questions
+- There are tests for the risky behavior that a reviewer is likely to try.
 
-### What is not yet top-tier
+### What is still weaker
 
-- Retrieval still uses vector similarity without a reranker.
-- The OpenAI client path is still synchronous under the hood.
-- There is no benchmark dataset or quantitative answer-quality evaluation harness.
-- The deployment setup is still local/development-oriented.
+- Search is still basic and does not use a reranker.
+- OpenAI calls are still sync under the hood.
+- There is no full benchmark set for answer quality.
+- The setup is still local/demo-friendly more than production-ready.
 
-### Self-score
+### My score
 
 `8.3/10`
 
-## 2. Documentation and Reproducibility (25%)
+## 2. Documentation and Reproducibility
 
-### What is strong
+### What went well
 
-- The README is now structured as a production-style handoff document.
-- The repo includes:
-  - setup instructions
-  - architecture diagrams
-  - API overview
-  - runbook
-  - trade-off analysis
-  - self-assessment
-- Verification commands are explicit and easy to copy.
-- The corpus is curated and deterministic, which improves reproducibility.
+- The README is now simple and direct.
+- The repo includes setup steps, architecture docs, a runbook, trade-off notes, and this self-review.
+- The commands to verify the system are easy to copy and run.
+- The document set is fixed, which makes the system easier to reproduce.
 
-### Remaining gap
+### What is still weaker
 
-- A one-command bootstrap script would make local setup even smoother.
+- A one-command setup script would make local setup even easier.
 
-### Self-score
+### My score
 
 `9.0/10`
 
-## 3. Creativity and Constraint Handling (20%)
+## 3. Creativity and Constraint Handling
 
-### What is strong
+### What went well
 
-- The memory architecture is not a trivial "stuff everything into one prompt" approach.
-- The project treats constraints as part of the design, not as afterthoughts.
-- Routing avoids wasting research budget on clearly out-of-scope questions.
-- The system is designed to fail explicitly when grounded evidence is not available.
+- I did not solve this with one large prompt.
+- The memory plan is part of the design, not an afterthought.
+- The app routes off-topic questions away from the research flow.
+- The app prefers a safe answer over a fake grounded answer.
 
-### Remaining gap
+### What is still weaker
 
-- More ambitious memory strategies could be explored, such as long-lived episodic memory or learned retrieval prioritization.
+- There is room for a more advanced memory or ranking approach.
 
-### Self-score
+### My score
 
 `8.5/10`
 
-## 4. Business Impact Reasoning (15%)
+## 4. Business Impact Reasoning
 
-### What is strong
+### What went well
 
-- The architecture explicitly optimizes for bounded cost and predictable behavior.
-- The split between n8n and FastAPI is grounded in maintainability and operational reliability.
-- The routing layer exists for practical reasons: save cost, reduce latency, and avoid irrelevant retrieval.
+- The design keeps cost and time predictable.
+- The split between n8n and FastAPI is based on reliability, not just tool hype.
+- Routing exists for a practical reason: do not waste time and money on the wrong path.
 
-### Remaining gap
+### What is still weaker
 
-- A production-facing ROI discussion with expected query volumes and cost envelopes would strengthen this further.
+- I did not include a deeper ROI model with expected traffic and cost ranges.
 
-### Self-score
+### My score
 
 `8.3/10`
 
-## Weighted Overall Assessment
+## Weighted Overall Score
 
-Using the rubric weights above, the current state is approximately:
+Approximate overall score:
 
 `8.5/10`
 
-## What I Would Improve Next With More Time
+## What I Would Improve Next
 
-1. Add a reranking stage to improve retrieval precision.
-2. Add a small evaluation dataset with expected outputs or grading heuristics.
-3. Move OpenAI calls to a truly async client path.
-4. Add deployment notes for a more secure n8n/FastAPI environment.
-5. Extend routing tests with a larger table of in-scope and out-of-scope queries.
+1. Add a reranker on top of search.
+2. Add a small answer-quality benchmark set.
+3. Move model calls to a truly async path.
+4. Add stronger deployment notes for a shared environment.
+5. Expand the routing test set.
 
 ## Final Honest Claim
 
-This submission is not "production complete," but it is strong enough to defend in a technical review because the architecture is deliberate, the failure modes are increasingly explicit, and the documentation makes the trade-offs visible rather than hiding them.
+This is not a finished production product, but it is strong enough to defend in review because the design is clear, the limits are explicit, the failure cases are safer, and the docs are easy to follow.

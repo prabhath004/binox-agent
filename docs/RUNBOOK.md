@@ -1,14 +1,14 @@
 # Runbook
 
-This runbook is intended for evaluators and maintainers who want to reproduce the system quickly and understand the expected runtime behavior.
+This file shows how to run the project and what to check.
 
-## 1. Prerequisites
+## 1. What You Need
 
 - Python `3.11+`
 - OpenAI API key
-- Optional: Docker if you want to run n8n locally
+- Docker only if you want to run n8n
 
-## 2. Local Setup
+## 2. Setup
 
 ```bash
 python -m venv venv
@@ -17,27 +17,31 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` in `.env`.
+Then put your key in `.env`:
 
-## 3. Ingest the Corpus
+```bash
+OPENAI_API_KEY=your-key
+```
+
+## 3. Build The Local Search Store
 
 ```bash
 python ingest.py
 ```
 
-This builds the local Chroma store under `./chroma_store`.
+This creates the local Chroma store in `./chroma_store`.
 
-## 4. Run Tests
+## 4. Run The Tests
 
 ```bash
 pytest -q
 ```
 
-Expected result:
+Expected:
 
 - all tests pass
 
-## 5. Start the API
+## 5. Start The API
 
 ```bash
 uvicorn app.main:app --reload --port 8000
@@ -51,7 +55,7 @@ Useful endpoints:
 - `POST /research`
 - `GET /docs`
 
-## 6. Verification Checklist
+## 6. Quick Checks
 
 ### Health
 
@@ -59,13 +63,13 @@ Useful endpoints:
 curl -s http://localhost:8000/health | jq
 ```
 
-Expected:
+You should see:
 
 - `status: "ok"`
 - `openai_configured: true`
-- `corpus_chunks` greater than `0`
+- `corpus_chunks` more than `0`
 
-### Route a general query
+### General question
 
 ```bash
 curl -s -X POST http://localhost:8000/route \
@@ -77,7 +81,7 @@ Expected:
 
 - `routed_to: "direct_gpt"`
 
-### Route an in-scope product query
+### In-scope research question
 
 ```bash
 curl -s -X POST http://localhost:8000/route \
@@ -90,9 +94,9 @@ Expected:
 - `router_label: "research"`
 - `routed_to` is either:
   - `research_pipeline`
-  - `direct_gpt_fallback` if no evidence was found
+  - `direct_gpt_fallback` if the local docs do not contain enough useful evidence
 
-### Run the research endpoint directly
+### Run research directly
 
 ```bash
 curl -s -X POST http://localhost:8000/research \
@@ -102,9 +106,9 @@ curl -s -X POST http://localhost:8000/research \
 
 Expected:
 
-- sub-questions present
-- budget report present
-- memory state present
+- sub-questions in the response
+- budget report in the response
+- memory state in the response
 
 ## 7. n8n Setup
 
@@ -118,11 +122,11 @@ Then:
 
 1. open `http://localhost:5678`
 2. import `n8n/workflow.json`
-3. activate the workflow
+3. turn the workflow on
 
 ### Real webhook
 
-For repeatable requests, use:
+Use this for repeated testing:
 
 ```bash
 curl -s -X POST http://localhost:5678/webhook/research \
@@ -132,60 +136,60 @@ curl -s -X POST http://localhost:5678/webhook/research \
 
 ### Test webhook
 
-If using `/webhook-test/research`, you must click `Execute workflow` in the n8n editor before each call. This is normal n8n behavior.
+If you use `/webhook-test/research`, you need to click `Execute workflow` in the n8n UI before each call. That is normal n8n behavior.
 
-## 8. Troubleshooting
+## 8. Common Problems
 
-### `status: degraded` on `/health`
+### `/health` says `degraded`
 
 Check:
 
 - `OPENAI_API_KEY` is set
-- `python ingest.py` has been run
-- Chroma store exists and is readable
+- `python ingest.py` was run
+- the Chroma files exist
 
-### Query unexpectedly routed to general
+### A question was routed the wrong way
 
 Check:
 
-- whether the query is truly in scope of the corpus
-- `POST /classify` output directly
-- whether the n8n workflow was refreshed after importing changes
+- `POST /classify` first
+- whether the question is really inside the scope of the local docs
+- whether n8n has the latest imported workflow
 
-### n8n returns `404` for `/webhook-test/research`
+### n8n test webhook returns `404`
 
-This happens when the test webhook is not currently armed. Use one of:
+That usually means the test webhook is not armed.
 
-- click `Execute workflow` and retry
-- use the real `/webhook/research` endpoint instead
+Fix:
 
-### Research returns fallback direct answer
+- click `Execute workflow` in n8n
+- or use `/webhook/research` instead
 
-This means:
+### Research falls back to direct GPT
 
-- the router considered the query in-scope
-- but Chroma retrieval returned no usable evidence
+That means:
 
-That is safer than fabricating a grounded answer and is expected behavior.
+- the router thought the question should use research
+- but the local docs did not return enough useful evidence
 
-## 9. Resetting Local State
+This is expected safer behavior.
 
-If you want to rebuild the vector store from scratch:
+## 9. Reset Local State
+
+To rebuild the local search store:
 
 ```bash
 rm -rf chroma_store
 python ingest.py
 ```
 
-If n8n editor state appears stale:
+If the n8n editor looks stale:
 
 1. refresh the page
 2. reopen the workflow
-3. discard unsaved changes if prompted
+3. discard unsaved changes if asked
 4. re-import `n8n/workflow.json` if needed
 
-## 10. Operational Notes
+## 10. Final Note
 
-- `docker-compose.yml` is for local development/demo use
-- n8n basic auth is disabled there for convenience and should be enabled in any shared environment
-- the current setup is optimized for reproducibility of the assessment, not hardened production deployment
+This setup is meant for local testing and assessment review. It is not a locked-down production deployment.

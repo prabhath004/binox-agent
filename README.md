@@ -1,115 +1,156 @@
 # Deep Research Agent
 
-Production-style prototype of a budget-constrained research agent that answers complex questions over a bounded corpus while operating under explicit token, retrieval, and cost limits.
+This project is a research assistant that answers harder questions using a small document set, while staying inside clear token, chunk, and cost limits.
 
-This submission was built for the G3 "Deep Research Agent + Memory Constraints" assessment. It combines:
+It was built for the G3 "Deep Research Agent + Memory Constraints" task.
 
-- LangGraph for multi-step research orchestration
-- ChromaDB for local vector retrieval
-- OpenAI `gpt-4o-mini` for planning, replanning, and synthesis
-- FastAPI for the API surface and routing logic
-- n8n as a thin webhook/integration layer
+The stack is simple:
 
-## Executive Summary
+- FastAPI for the API
+- LangGraph to run the research steps
+- ChromaDB to search the local document set
+- OpenAI `gpt-4o-mini` for planning and writing the final answer
+- n8n as a light webhook layer
 
-The system is designed to answer queries that require structured research over a curated corpus of AI developer tooling documents. It does not treat the LLM as a single-shot answer engine. Instead, it:
+## What This Project Does
 
-1. plans sub-questions
-2. retrieves relevant corpus evidence
-3. compresses evidence when memory limits are exceeded
-4. optionally replans when critical gaps remain
-5. synthesizes a grounded final answer with explicit limitations
+Instead of sending the user question to the model in one big prompt, the app does the work in steps:
 
-The implementation prioritizes bounded behavior over optimistic behavior. If the corpus has no relevant evidence, the research path now refuses to fabricate a grounded answer.
+1. break the question into smaller questions
+2. search the local document set
+3. shorten the notes if they get too large
+4. add follow-up questions if important facts are still missing
+5. write the final answer
 
-## Submission Contents
+The main goal is not to sound smart at all costs. The main goal is to stay within limits and avoid pretending the document set said something when it did not.
 
-- [Architecture deep dive](docs/ARCHITECTURE.md)
-- [Runbook and verification guide](docs/RUNBOOK.md)
-- [Architecture trade-offs](evaluation.md)
-- [Self-assessment against rubric](SELF_ASSESSMENT.md)
+## What Makes It Different
 
-## System Diagram
+- It has clear limits for cost, tokens, chunks, and re-runs.
+- It can say "no evidence found" instead of making things up.
+- It routes off-topic questions away from the research flow.
+- It keeps the workflow small enough to understand and test.
+
+## Files To Read First
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the system works
+- [docs/RUNBOOK.md](docs/RUNBOOK.md): how to run and check it
+- [evaluation.md](evaluation.md): why I made these design choices
+- [SELF_ASSESSMENT.md](SELF_ASSESSMENT.md): honest review against the rubric
+
+## Simple System Diagram
 
 ```mermaid
 flowchart LR
-    U[User Query] --> N[n8n Webhook]
-    N --> V[Validate and Normalize]
-    V --> R[FastAPI /route]
-    R --> C[Classifier]
-    C -->|general| G[Direct GPT Answer]
-    C -->|research| P[LangGraph Research Pipeline]
+    U[User Question] --> N[n8n Webhook]
+    N --> C[Clean Input]
+    C --> R[FastAPI /route]
+    R --> D{Question Type}
+    D -->|general| G[Direct GPT Answer]
+    D -->|research| P[Research Flow]
 
-    subgraph P1[Research Pipeline]
-        P --> P2[Plan]
-        P2 --> P3[Retrieve]
-        P3 --> P4[Compress if Needed]
-        P4 --> P5[Replan if Needed]
-        P5 -->|more questions| P3
-        P5 -->|done| P6[Synthesize]
+    subgraph RF[Research Flow]
+        P --> P1[Plan]
+        P1 --> P2[Search Docs]
+        P2 --> P3[Shorten Notes If Needed]
+        P3 --> P4[Add More Questions If Needed]
+        P4 -->|more needed| P2
+        P4 -->|done| P5[Write Final Answer]
     end
 
-    G --> O[Structured Response]
-    P6 --> O
+    G --> O[Response]
+    P5 --> O
 ```
 
-## Key Capabilities
+## Example Output
 
-- Multi-step research decomposition for complex questions
-- Retrieval over a bounded local corpus using ChromaDB
-- Explicit memory strategy using a summarization cascade
-- Hard limits on context size, retrieved chunks, cost, and replans
-- Safer zero-evidence behavior to avoid fake "grounded" answers
-- Query routing that avoids wasting research budget on off-topic questions
-- Thin n8n workflow for webhook-driven integrations
+Below is a shortened example of what the `/route` endpoint can return for an in-scope question:
 
-## Architecture at a Glance
+```json
+{
+  "answer": "Cursor is positioned as an AI-first code editor, while Replit focuses more on browser-based development and collaboration. In the corpus, Cursor is shown as stronger for editor-native workflows, while Replit is easier to use fully in the cloud. Pricing and trade-offs depend on the plan and the type of user.",
+  "routed_to": "research_pipeline",
+  "router_label": "research",
+  "sub_questions": [
+    "What is Cursor's product positioning and pricing?",
+    "What is Replit's product positioning and pricing?",
+    "How do Cursor and Replit differ in strengths and trade-offs?"
+  ],
+  "sections": [
+    {
+      "sub_question": "What is Cursor's product positioning and pricing?",
+      "finding": "Cursor is described as an AI-first code editor with paid plans in the corpus.",
+      "confidence": "high"
+    },
+    {
+      "sub_question": "How do Cursor and Replit differ in strengths and trade-offs?",
+      "finding": "Cursor is stronger for editor-based workflows, while Replit is stronger for browser-based use and collaboration.",
+      "confidence": "medium"
+    }
+  ],
+  "key_insights": [
+    "Both tools target AI-assisted coding, but the product shape is different.",
+    "The best choice depends on whether the user wants a local editor flow or a browser-first flow."
+  ],
+  "limitations": [
+    "Some comparison details depend on what was present in the local document set."
+  ],
+  "sources_used": [
+    "01_cursor.md",
+    "03_replit.md",
+    "13_tool_comparison.md"
+  ],
+  "budget_report": {
+    "estimated_cost_usd": 0.001234,
+    "retrieved_chunks": 8,
+    "replans_used": 1
+  },
+  "memory_state": {
+    "evidence_chunks": 8,
+    "compressed_summaries": 1,
+    "skipped_chunks": 0
+  },
+  "elapsed_seconds": 12.4
+}
+```
 
-| Layer | Responsibility |
+## Main Parts
+
+| Part | Plain meaning |
 |---|---|
-| `n8n` | Webhook entrypoint, light validation, request normalization, proxy to FastAPI |
-| `FastAPI /route` | Query classification, route selection, direct-answer fallback |
-| `LangGraph` | Stateful research orchestration with loop control |
-| `ChromaDB` | Local vector retrieval over the curated markdown corpus |
-| `BudgetTracker` | Hard constraints on token budget, chunk budget, replans, and cost |
-| `MemoryStore` | Evidence accumulation and compression cascade |
+| `n8n` | receives webhook requests and forwards them |
+| `FastAPI /route` | decides if the question should use research or a normal GPT answer |
+| `LangGraph` | runs the research steps in order |
+| `ChromaDB` | searches the local document set |
+| `BudgetTracker` | keeps the run inside the set limits |
+| `MemoryStore` | keeps notes and shortens them when needed |
 
-## Memory Strategy
+## Memory Plan
 
-This project implements a summarization-cascade memory architecture:
+The app uses a simple three-level memory setup:
 
-- Tier 1: per-step working context
-- Tier 2: retrieved evidence chunks accumulated across steps
-- Tier 3: compressed summaries that replace raw evidence once token pressure becomes too high
+1. current working notes for the step
+2. saved evidence chunks from the document search
+3. shorter summary notes when the evidence gets too large
 
-Why this choice:
+Why this helps:
 
-- keeps prompts small and cheap
-- makes budget behavior explicit
-- preserves salient facts and citations better than naive truncation
+- lower cost
+- smaller prompts
+- less chance of the model losing focus
 
-The detailed memory design is documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [evaluation.md](evaluation.md).
+## Limits
 
-## Constraints
+Default limits:
 
-Default runtime constraints:
-
-| Constraint | Default | Enforcement |
+| Limit | Default | What happens |
 |---|---|---|
-| Max context tokens per step | `800` | Compress evidence before large LLM calls |
-| Max retrieved chunks | `20` | Stop retrieval and record skipped chunks |
-| Max cost per run | `$0.05` | Hard cutoff and early synthesis |
-| Max replans | `2` | Prevent unbounded looping |
-
-These are configurable per request through the API.
+| Max context per step | `800` tokens | notes are shortened |
+| Max chunks | `20` | lower-priority chunks are skipped |
+| Max run cost | `$0.05` | the run stops early and writes the best answer it can |
+| Max replan count | `2` | no more extra questions are added |
 
 ## Quick Start
-
-### Prerequisites
-
-- Python `3.11+` tested locally with Python `3.13.5`
-- OpenAI API key
-- Optional: Docker for n8n
 
 ### 1. Install
 
@@ -119,19 +160,19 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment
+### 2. Set the API key
 
 ```bash
 cp .env.example .env
 ```
 
-Set at minimum:
+Then set:
 
 ```bash
 OPENAI_API_KEY=your-key
 ```
 
-### 3. Ingest the corpus
+### 3. Build the local search store
 
 ```bash
 python ingest.py
@@ -155,22 +196,9 @@ uvicorn app.main:app --reload --port 8000
 docker-compose up
 ```
 
-Then import [n8n/workflow.json](n8n/workflow.json) into n8n and activate the workflow.
+Then import [n8n/workflow.json](n8n/workflow.json) into n8n and turn the workflow on.
 
-## Environment Variables
-
-`.env.example` includes the main knobs used by the project.
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `OPENAI_API_KEY` | OpenAI authentication | required |
-| `OPENAI_MODEL` | Main LLM for planner/replanner/synthesizer | `gpt-4o-mini` |
-| `ROUTER_MODEL` | Optional model override for routing classifier | inherits `OPENAI_MODEL` |
-| `CHROMA_DIR` | Local Chroma persistence directory | `./chroma_store` |
-| `CHROMA_COLLECTION` | Chroma collection name | `research_corpus` |
-| `RAG_CORPUS_SCOPE` | Text description of what the corpus covers | built-in default |
-
-## Verification Commands
+## Basic Checks
 
 ### Health check
 
@@ -188,7 +216,7 @@ Expected shape:
 }
 ```
 
-### General query routed away from research
+### Off-topic question
 
 ```bash
 curl -s -X POST http://localhost:8000/route \
@@ -200,7 +228,7 @@ Expected:
 
 - `routed_to: "direct_gpt"`
 
-### In-scope product query routed to research
+### In-scope question
 
 ```bash
 curl -s -X POST http://localhost:8000/route \
@@ -211,10 +239,10 @@ curl -s -X POST http://localhost:8000/route \
 Expected:
 
 - `router_label: "research"`
-- `routed_to: "research_pipeline"` when evidence exists
-- `routed_to: "direct_gpt_fallback"` only if the query is in-scope but the corpus returns no evidence
+- `routed_to: "research_pipeline"` if the local docs contain enough evidence
+- `routed_to: "direct_gpt_fallback"` if the question is in scope but the local docs do not contain useful evidence
 
-### Direct research endpoint
+### Run research directly
 
 ```bash
 curl -s -X POST http://localhost:8000/research \
@@ -222,13 +250,11 @@ curl -s -X POST http://localhost:8000/research \
   -d '{"query":"Compare Cursor vs Copilot pricing and risks"}' | jq
 ```
 
-## API Overview
+## API Endpoints
 
 ### `POST /classify`
 
-Returns only the route label.
-
-Example response:
+Returns only the route label:
 
 ```json
 {"route":"research","query_echo":"what is cursor vs replit"}
@@ -236,36 +262,36 @@ Example response:
 
 ### `POST /route`
 
-Classifies the query and returns either:
+Checks the question and returns:
 
-- a research-pipeline response
-- a direct GPT response
-- a direct GPT fallback response when the research route found no corpus evidence
+- a research answer
+- a normal GPT answer
+- or a fallback GPT answer if research found no useful evidence
 
 ### `POST /research`
 
-Runs the research pipeline directly without front-door routing.
+Runs the research flow directly.
 
 ### `GET /health`
 
-Reports high-level service readiness:
+Shows whether:
 
-- whether OpenAI is configured
-- how many chunks are present in ChromaDB
+- OpenAI is configured
+- the local search store is ready
 
-Interactive docs are available at `GET /docs`.
+Docs are also available at `GET /docs`.
 
-## Testing and Regression Coverage
+## Tests
 
-The repo includes targeted regression tests for the highest-risk behaviors:
+The test suite checks the most important risky cases:
 
-- invalid requests are rejected early
-- Cursor-related product queries stay on the research path
-- SQL/UI cursor queries stay on the general path
-- zero-evidence synthesis does not call the LLM
-- duplicate chunks are not re-added on later retrieval passes
-- hard cost cutoffs preserve the latest plan state
-- `/route` falls back safely when research finds no evidence
+- blank or invalid requests fail early
+- Cursor product questions stay on the research path
+- SQL/UI cursor questions stay on the general path
+- no-evidence research does not call the model for a fake grounded answer
+- duplicate chunks are not added again later
+- hard cutoffs still keep the planned sub-questions
+- `/route` falls back safely when the docs do not contain useful evidence
 
 Run:
 
@@ -273,60 +299,81 @@ Run:
 pytest -q
 ```
 
-## n8n's Role in This Submission
+## Why n8n Is Here
 
-The assignment suggested `n8n/Dify for query routing + memory management`. In this implementation, the strongest engineering choice was to keep core logic in code and use n8n as a thin integration layer.
+The task asked for `n8n/Dify` in the workflow. In this project, n8n is used as the outer wrapper, not the main decision-maker.
 
-What n8n does:
+n8n does:
 
-- receives external webhook calls
-- normalizes request payloads
-- forwards requests to FastAPI `/route`
-- returns the response to the caller
+- receive webhook calls
+- clean simple input
+- forward the request to FastAPI `/route`
+- return the result
 
-What n8n intentionally does not do:
+n8n does not:
 
-- own routing logic
-- manage memory state
+- decide the core routing logic
+- manage the research memory
 - run the research loop
 
-This keeps one source of truth for routing behavior and makes the system easier to test and reason about.
+This keeps the main logic in Python, which makes the system easier to test and less fragile.
 
-Workflow snapshot:
+Workflow image:
 
 <img width="1077" height="485" alt="n8n workflow" src="https://github.com/user-attachments/assets/d239ec70-bb1a-4da2-a0e9-55ad3861106b" />
 
-## Documentation Map
+## Repo Map
 
-| File | Purpose |
+| File | What it is for |
 |---|---|
-| `README.md` | Submission overview, quick start, reproducibility, high-level architecture |
-| `docs/ARCHITECTURE.md` | Detailed component design, request flows, memory model |
-| `docs/RUNBOOK.md` | Setup, operational commands, troubleshooting, local verification |
-| `evaluation.md` | Architecture trade-offs and design rationale |
-| `SELF_ASSESSMENT.md` | Honest rubric-based assessment of the submission |
+| `README.md` | main overview and quick start |
+| `docs/ARCHITECTURE.md` | simple system explanation |
+| `docs/RUNBOOK.md` | setup, checks, and troubleshooting |
+| `evaluation.md` | design trade-offs |
+| `SELF_ASSESSMENT.md` | honest score against the rubric |
 
-## Repository Structure
+## Repo Structure
 
 ```text
 app/
-  main.py             FastAPI app, routing endpoint, LangGraph orchestration
-  router.py           Query classifier and direct-GPT fallback path
-  planner.py          Planning and replanning prompts
-  retriever.py        ChromaDB retrieval and relevance filtering
-  memory.py           Memory store and compression logic
-  synthesizer.py      Grounded report synthesis
-  budget.py           Budget tracking and hard limits
-  utils.py            Shared OpenAI wrapper and logging
+  main.py             API app and research flow
+  router.py           question router
+  planner.py          question breakdown
+  retriever.py        local search
+  memory.py           note storage and shortening
+  synthesizer.py      final answer writer
+  budget.py           limit tracking
+  utils.py            shared helper code
 data/
-  *.md                Curated AI developer tooling corpus
+  *.md                local document set
 tests/
-  test_api.py         API and fallback behavior
-  test_pipeline.py    Memory and budget pipeline behavior
-  test_router.py      Routing heuristics
+  test_api.py         API behavior tests
+  test_pipeline.py    memory and budget tests
+  test_router.py      routing tests
 n8n/
-  workflow.json       Thin webhook + proxy workflow
+  workflow.json       thin webhook flow
 ```
 
-dynamically crawled
+## Known Gaps
 
+This is a strong prototype, but not a finished production system.
+
+Main gaps still left:
+
+- no reranker on top of vector search
+- no full benchmark set for answer quality
+- OpenAI calls are still sync under the hood
+- n8n setup is meant for local use, not a hardened shared deployment
+- the document set is small and hand-picked
+
+## Final Note
+
+This project meets the task in a clear and testable way:
+
+- it breaks down harder questions
+- it works under set limits
+- it uses a real memory plan
+- it includes workflow tooling
+- it documents the design choices openly
+
+For the deeper design write-up, read [evaluation.md](evaluation.md).
