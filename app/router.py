@@ -1,20 +1,34 @@
 """Query router — classifies queries and routes to RAG pipeline or direct GPT."""
 from __future__ import annotations
+import re
+
 from app.utils import call_llm, logger
 
-ROUTER_PROMPT = """Classify this query. Respond with ONLY one word: research or general
+ROUTER_PROMPT = """You are a strict router for an AI developer-tools knowledge base.
+Respond with EXACTLY one lowercase word: research or general. No punctuation.
 
-"research" = about AI developer tools, coding assistants, IDEs, AI editors, or these products: Cursor, Copilot, GitHub, Replit, Cody, Sourcegraph, Tabnine, Windsurf, Codeium, Devin, Continue, v0, Vercel, Bolt.new, StackBlitz
+research = query is specifically about AI coding assistants, IDE AI tools, or products like Cursor, Copilot, Windsurf, Tabnine, Cody, Codeium, Devin, v0, Replit, and similar — including their pricing, comparisons, or market analysis.
 
-"general" = anything else
+general = everything else (movies, sports, trivia, unrelated coding homework, etc.).
+If unsure, answer general.
 
-Examples: "Compare Cursor vs Copilot" → research | "Risks of Devin" → research | "Capital of France" → general"""
+Examples: "Compare Cursor vs Copilot pricing" → research | "what is bahubali 2" → general"""
+
+_TOOLING = re.compile(
+    r"\b(cursor|copilot|github\s*copilot|windsurf|tabnine|cody|codeium|sourcegraph|continue\.dev|"
+    r"devin|aider|cline|vscode|vs\s*code|jetbrains|intellij|neovim|\bide\b|ai\s*coding|coding\s*assistant|"
+    r"code\s*completion|pair\s*programm|developer\s*tools?|dev\s*tools?|llm\s+for\s*code|replit|"
+    r"bolt\.new|\bv0\b|vercel\s+v0|stackblitz|gitlab|\bgithub\b)\b",
+    re.I,
+)
 
 
 def classify_query(query: str) -> str:
     raw, _, _ = call_llm(ROUTER_PROMPT, query, max_tokens=5, temperature=0)
-    route = raw.strip().lower()
-    if "research" in route:
+    first = re.sub(r"[^a-z]+", " ", raw.strip().lower()).split()
+    first_word = first[0] if first else ""
+    llm_research = first_word == "research"
+    if llm_research and _TOOLING.search(query):
         return "research"
     return "general"
 

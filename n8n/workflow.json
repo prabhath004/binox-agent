@@ -49,7 +49,17 @@
       "name": "Query Router",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [620, 300]
+      "position": [626, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = items[0].json;\nconst q = String($('Webhook').item.json.body?.query || '').toLowerCase();\nconst raw = String(item.choices?.[0]?.message?.content || '').trim().toLowerCase();\nconst firstToken = raw.split(/[^a-z]+/).find(t => t.length > 0) || '';\nconst llmResearch = firstToken === 'research';\nconst tooling = /\\b(cursor|copilot|github\\s*copilot|\\bgithub\\b|gitlab|windsurf|tabnine|cody|codeium|sourcegraph|continue\\s*\\.dev|devin|aider|cline|vscode|vs\\s*code|jetbrains|intellij|neovim|\\bide\\b|ai\\s*coding|coding\\s*assistant|code\\s*completion|pair\\s*programm|developer\\s*tools?|dev\\s*tools?|llm\\s+for\\s+code|replit|bolt\\.new|\\bv0\\b|vercel\\s+v0|stackblitz)\\b/i.test(q);\nconst route_label = llmResearch && tooling ? 'research' : 'general';\nreturn { json: { ...item, route_label } };"
+      },
+      "id": "route-gate-1",
+      "name": "Apply Route Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300]
     },
     {
       "parameters": {
@@ -58,7 +68,7 @@
           "conditions": [
             {
               "id": "route-check",
-              "leftValue": "={{ (($json.choices?.[0]?.message?.content || '').trim().toLowerCase() === 'research') ? 'research' : 'general' }}",
+              "leftValue": "={{ $json.route_label }}",
               "rightValue": "research",
               "operator": { "type": "string", "operation": "equals" }
             }
@@ -151,6 +161,11 @@
       ]
     },
     "Query Router": {
+      "main": [
+        [{ "node": "Apply Route Gate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Apply Route Gate": {
       "main": [
         [{ "node": "Route Decision", "type": "main", "index": 0 }]
       ]
