@@ -58,9 +58,9 @@
           "conditions": [
             {
               "id": "route-check",
-              "leftValue": "={{ ($json.choices[0].message.content || '').trim().toLowerCase() }}",
+              "leftValue": "={{ /\\b(cursor|copilot|github copilot|windsurf|tabnine|cody|continue|devin|aider|cline|ide|editor|vscode|vs code|coding assistant|ai coding|code completion|autocomplete|developer tools|dev tools|pricing|subscription|license)\\b/i.test($('Webhook').item.json.body.query) ? 'research' : 'general' }}",
               "rightValue": "research",
-              "operator": { "type": "string", "operation": "contains" }
+              "operator": { "type": "string", "operation": "equals" }
             }
           ]
         }
@@ -107,7 +107,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const query = $('Webhook').item.json.body.query;\nconst routerJson = $('Query Router').item.json;\nconst routeText = (routerJson.choices?.[0]?.message?.content || routerJson.message?.content || '').trim().toLowerCase();\nconst routedTo = routeText.includes('research') ? 'research_pipeline' : 'direct_gpt';\n\nif (routedTo === 'research_pipeline') {\n  const research = $('Research Pipeline (RAG)').item.json || {};\n  return { json: research };\n}\n\nconst gptResponse = $('Direct GPT (General)').item.json || {};\nreturn {\n  json: {\n    answer: gptResponse.choices?.[0]?.message?.content || gptResponse.message?.content || 'No answer',\n    sub_questions: [],\n    sections: [],\n    key_insights: [],\n    limitations: ['Answered from general knowledge - not from research corpus'],\n    sources_used: [],\n    budget_report: { note: 'No research pipeline used - direct GPT response' },\n    memory_state: {},\n    elapsed_seconds: 0\n  }\n};"
+        "jsCode": "const input = items?.[0]?.json ?? {};\n\n// If this came from the research pipeline, it's already in the desired schema.\nif (typeof input.answer === 'string' && Array.isArray(input.sub_questions) && input.budget_report) {\n  return { json: input };\n}\n\n// Otherwise, treat it as an OpenAI Chat Completions response from Direct GPT.\nconst answer = input.choices?.[0]?.message?.content || input.message?.content || 'No answer';\nreturn {\n  json: {\n    answer,\n    sub_questions: [],\n    sections: [],\n    key_insights: [],\n    limitations: ['Answered from general knowledge - not from research corpus'],\n    sources_used: [],\n    budget_report: { note: 'No research pipeline used - direct GPT response' },\n    memory_state: {},\n    elapsed_seconds: 0\n  }\n};"
       },
       "id": "format-1",
       "name": "Format Response",
@@ -146,13 +146,8 @@
     },
     "Validate Input": {
       "main": [
-        [{ "node": "Query Router", "type": "main", "index": 0 }],
+        [{ "node": "Route Decision", "type": "main", "index": 0 }],
         [{ "node": "Missing Query Error", "type": "main", "index": 0 }]
-      ]
-    },
-    "Query Router": {
-      "main": [
-        [{ "node": "Route Decision", "type": "main", "index": 0 }]
       ]
     },
     "Route Decision": {
